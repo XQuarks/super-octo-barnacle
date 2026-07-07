@@ -1,3 +1,97 @@
+/* ================= 全局工具与双模式 ================= */
+// D3: 显式声明，避免隐式全局（否则一旦加 'use strict' 即崩）
+let isCoreLoreCached = false;
+// A2: 单一真相，消除 buildSystemPrompt 与 isLoreFullInSystem 的 12000/20000 不一致
+const LORE_FULL_THRESHOLD = 20000;
+
+// 双模式：纯叙事（AI 文字扮演冒险）vs 跑团（TRPG）
+function isNarrativeMode(world) {
+    const w = world || (typeof currentWorld !== "undefined" ? currentWorld : null);
+    return !!(w && w.ruleset_type === "narrative");
+}
+
+// D2: 缓存中文分词器，避免每 chunk 重建 Intl.Segmenter
+let _zhSegmenter = null;
+function getZhSegmenter() {
+    if (_zhSegmenter === null) {
+        try { _zhSegmenter = new Intl.Segmenter("zh-CN", { granularity: "word" }); }
+        catch (e) { _zhSegmenter = false; }
+    }
+    return _zhSegmenter || null;
+}
+
+// A1: 确保浏览器端 ONNX embedding 模型已加载
+async function ensureEmbeddingModel() {
+    if (embeddingModel) return embeddingModel;
+    try {
+        try { transformers.env.localModelPath = "./models/"; } catch (e) {}
+        embeddingModel = await transformers.pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2");
+    } catch (e) {
+        console.warn("embedding model load failed", e);
+    }
+    return embeddingModel;
+}
+
+// A1: 为某世界的知识片段补齐向量。格式必须与 tools/generate_embeddings.py 完全一致，
+// 否则新片段与预计算向量不在同一向量空间，余弦相似度无意义。
+async function computeEmbeddingsForWorld(world) {
+    if (!world || !world.lore_kb || !world.lore_kb.snippets) return;
+    await ensureEmbeddingModel();
+    if (!embeddingModel) return;
+    for (const s of world.lore_kb.snippets) {
+        if (s.embedding && Array.isArray(s.embedding) && s.embedding.length) continue;
+        try {
+            const text = `${s.category} ${s.title} ${s.content} ${(s.keywords || []).join(" ")}`;
+            const out = await embeddingModel(text, { pooling: "mean", normalize: true });
+            s.embedding = Array.from(out.data);
+        } catch (e) { /* 留空 → 该片段仅走关键词检索，graceful 降级 */ }
+    }
+}
+
+// D1: 节流保存 worlds（行为记录高频写入时使用），降低长对话后期移动端卡顿
+let _saveWorldsTimer = null;
+function scheduleSaveWorlds() {
+    if (typeof saveWorlds !== "function") return;
+    if (_saveWorldsTimer) clearTimeout(_saveWorldsTimer);
+    _saveWorldsTimer = setTimeout(function () { saveWorlds(); _saveWorldsTimer = null; }, 400);
+}
+
+// 双模式规则块：模板中的 {RULES_MODE_SECTION} 占位符会被替换为其中之一
+const TRPG_RULES_BLOCK = `# D20 规则系统
+
+玩家拥有 6 项 CRPG 属性（STR 力量 / DEX 敏捷 / CON 体质 / INT 智力 / WIS 感知 / CHA 魅力），范围 3-20。调整值 = (属性值 - 10) ÷ 2 向下取整：
+| 属性值 | 10-11 | 12-13 | 14-15 | 16-17 | 18-19 | 20 |
+|--------|-------|-------|-------|-------|-------|----|
+| 调整值 | 0 | +1 | +2 | +3 | +4 | +5 |
+
+战斗摘要（在 user message 中提供）包含 HP/MP/AC/等级和当前属性值。你可以通过 state_changes.combat_stats 字段变更战斗数值：
+- hp_change: 正数为治疗，负数为受伤
+- mp_change: 消耗法力
+- xp_gain: 奖励经验
+- in_combat: true/false 进入/退出战斗
+- attributes: 仅在属性发生显著变化时更新具体属性值
+
+在叙事中应**同时使用** combat_stats 数值和文字描述属性：
+- STR 影响角色能否举起重物、挥舞重武器、破门而入
+- DEX 影响角色躲闪、潜行、开锁、平衡能力
+- CON 影响角色耐力、抗毒、承受伤害的能力
+- INT 影响角色解谜、学习法术、识别魔法、推理能力
+- WIS 影响角色直觉、察言观色、野外生存、医疗能力
+- CHA 影响角色说服、欺骗、恐吓、社交魅力
+
+当玩家尝试有风险或不确定结果的行动时，系统会在玩家输入后附加 [系统规则结果] 报告（如 D20 攻击检定结果）。你需要基于此结果叙事——成功时描写得手的过程，失败时描写失手的原因和后果。出目 20 为大成功（额外好处），出目 1 为大失败（严重后果）。`;
+
+const NARRATIVE_RULES_BLOCK = `# 纯叙事模式（AI 文字扮演冒险）
+
+本世界为纯叙事 / AI 文字扮演冒险模式：没有骰子、没有属性检定、没有战斗系统、没有 HP/MP/AC 等数值。
+
+- 不要输出任何 D20 / D100 / 技能检定结果，不要提及 hp、mp、ac、伤害数值、暴击等机制。
+- 不要使用 [系统规则结果] 这类规则报告。所有情节由你的叙事自然推进。
+- 你作为主持人，专注于：氛围描写、人物心理与对话、关系演变、环境细节、玩家自由行动的后果。
+- 玩家输入的"攻击 / 施法 / 休息 / 调查"等动作，应理解为**叙事意图**（如"拔出剑冲上去""念一段咒语""坐下来喘口气"），用文字描写过程与结果，而非掷骰。
+- 冲突、危险、战斗依然可以发生，但以文学化、剧情化的方式呈现，由你把握分寸与后果。
+- status_effects 只用于文字描述（如"疲惫""心绪不宁"），不要出现数值。`;
+
 /* ================= RAG 检索 ================= */
 function getWorldLoreKB() {
     return (currentWorld && currentWorld.lore_kb) || loreKB;
@@ -33,18 +127,27 @@ function segmentChinese(text) {
             if (chunk.length >= 2) terms.push(chunk.toLowerCase());
             continue;
         }
-        // 中文 → Intl.Segmenter 分词
-        try {
-            const segmenter = new Intl.Segmenter("zh-CN", { granularity: "word" });
+        // 中文 → Intl.Segmenter 分词（复用缓存单例）
+        const segmenter = getZhSegmenter();
+        if (!segmenter) {
+            // 降级：如果 Segmenter 不可用，对大块中文直接作为关键词
+            if (chunk.length >= 2 && chunk.length <= 10) terms.push(chunk);
+        } else {
             const segments = segmenter.segment(chunk);
             for (const seg of segments) {
                 if (seg.isWordLike && seg.segment.length >= 2) {
                     terms.push(seg.segment);
                 }
             }
-        } catch (e) {
-            // 降级：如果 Segmenter 不可用，对大块中文直接作为关键词
-            if (chunk.length >= 2 && chunk.length <= 10) terms.push(chunk);
+        }
+        // 2-gram 兜底：Intl.Segmenter 常把"药庐/论剑"等 2 字普通名词拆成单字，
+        // 而上面的长度≥2 过滤会把单字丢弃，导致相关 lore / 行为记录漏检。
+        // 补充相邻 2 字二元组，保证 2 字专有名词仍可被关键词检索命中（不影响已有命名实体召回）。
+        if (/[一-龥]/.test(chunk) && chunk.length >= 2) {
+            for (let i = 0; i + 1 < chunk.length; i++) {
+                const bg = chunk.slice(i, i + 2);
+                if (/[一-龥]{2}/.test(bg)) terms.push(bg);
+            }
         }
     }
     // 去重
@@ -102,7 +205,18 @@ async function retrieve(input) {
         merged.set("behavior_" + b.id, { snippet: { id: "behavior_" + b.id, category: "行为记录", title: "关键事实", content: b.text }, score: 1.5 });
     }
 
-    return Array.from(merged.values()).sort((a, b) => b.score - a.score).slice(0, 8).map(x => x.snippet);
+    // A3: 融合排序后做类别配额，保证多样性（避免 8 条全来自"人物"类）
+    const CAT_LIMIT = 3;
+    const byCat = {};
+    const ordered = Array.from(merged.values()).sort((a, b) => b.score - a.score);
+    const out = [];
+    for (const x of ordered) {
+        const cat = (x.snippet.category || "其他");
+        byCat[cat] = (byCat[cat] || 0) + 1;
+        if (byCat[cat] <= CAT_LIMIT) out.push(x);
+        if (out.length >= 8) break;
+    }
+    return out.map(x => x.snippet);
 }
 
 /* ================= 关键事实 / 玩家行为记录 ================= */
@@ -111,11 +225,12 @@ function retrieveBehaviorRecords(input, topK = 3) {
     const terms = segmentChinese(input);
     if (!terms.length) return [];
     const scored = currentWorld.behavior_records.map(b => {
-        let score = 0;
+        let score = 0, hits = 0;
         const text = b.text.toLowerCase();
-        for (const t of terms) if (text.includes(t)) score += 1;
-        return { ...b, score };
-    }).filter(x => x.score > 0).sort((a, b) => b.score - a.score).slice(0, topK);
+        for (const t of terms) if (text.includes(t)) { score += 1; hits++; }
+        return { ...b, score, hits };
+    // A4: 至少命中 2 个词，过滤弱相关/无关旧事实污染上下文
+    }).filter(x => x.hits >= 2).sort((a, b) => b.score - a.score).slice(0, topK);
     return scored;
 }
 
@@ -134,7 +249,7 @@ function addBehaviorRecords(facts) {
     if (currentWorld.behavior_records.length > 100) {
         currentWorld.behavior_records = currentWorld.behavior_records.slice(-100);
     }
-    saveWorlds();
+    scheduleSaveWorlds(); // D1: 节流，避免每轮全量写 localStorage
 }
 
 function summarizeFactsFromChanges(input, narrative, changes) {
@@ -197,17 +312,19 @@ function buildSystemPrompt() {
     const parts = systemPromptTemplate.split(DYNAMIC_DELIMITER);
     const fixedTemplate = parts[0] || "";
 
-    // 注入剧情自由度（分离为两个用途：规则部分 + 模板占位符）
+    // 注入自由度和规则控制
     let finalWorldRules = (currentWorld && currentWorld.desc) || worldRules;
-    const plotFreedomHints = {
-        1: "严格遵循原著剧情，关键事件必须按原著发生，NPC不可偏离其主要命运线，但日常互动可适度灵活。",
-        2: "以原著剧情为主，主线遵循原著，支线和日常可有限发散，NPC次要行动可自主。",
-        3: "在原著世界观框架内，剧情可适度创新和延伸，NPC依其性格自主行动。",
-        4: "以世界观为框架，剧情自由发挥，NPC完全自主行动。",
-        5: "仅以世界基本设定为框架，所有剧情自由创造，NPC行为不受原著约束。"
+
+    // 兼容新旧字段：优先使用新字段 world_freedom
+    var wf = currentWorld && (currentWorld.world_freedom || currentWorld.plot_freedom) || 3;
+    var worldFreedomHints = {
+        1: "世界观约束：严格遵循源材料。关键设定、人物关系、核心事件必须与源材料保持一致，不得主观偏离。",
+        2: "世界观约束：以源材料为锚。在设定框架内发展剧情，关键设定保持不变，细节可合理延伸。",
+        3: "世界观约束：适中。参考世界观的框架设定，剧情和人物可在合理范围内创新。",
+        4: "世界观约束：自由发挥。只保留世界观的核心设定和文化背景，剧情自由发展。",
+        5: "世界观约束：完全自由。仅借用世界观的基本概念，一切剧情由AI自主创作。"
     };
-    const plotFreedomText = currentWorld && currentWorld.plot_freedom ? plotFreedomHints[currentWorld.plot_freedom] || plotFreedomHints[3] : plotFreedomHints[3];
-    finalWorldRules += "\n\n" + plotFreedomText;
+    finalWorldRules += "\n\n" + (worldFreedomHints[wf] || worldFreedomHints[3]);
 
     // ★ 主角硬约束：从 hero 描述 + gameState 构建，确保 AI 不遗忘/降级主角设定
     const heroContext = buildHeroContext();
@@ -220,8 +337,10 @@ function buildSystemPrompt() {
         .replace(/{TONE_GUIDE}/g, toneGuide)
         .replace(/{WORLD_RULES}/g, finalWorldRules)
         .replace(/{WORLD_SCHEMA}/g, JSON.stringify(schema, null, 2))
-        .replace(/{PLOT_FREEDOM}/g, plotFreedomText)
-        .replace(/{TIME_MODE_RULES}/g, buildTimeModeRules());
+        .replace(/{WORLD_FREEDOM}/g, worldFreedomHints[wf])
+        .replace(/{TIME_MODE_RULES}/g, buildTimeModeRules())
+        .replace(/{RULES_MODE_SECTION}/g, isNarrativeMode() ? NARRATIVE_RULES_BLOCK : TRPG_RULES_BLOCK)
+        .replace(/{NARRATIVE_QUALITY_SECTION}/g, buildNarrativeQualitySection());
 
     // ★ 核心知识库注入 system（固定，命中缓存）
     // 无论知识库多大，规则/世界观/地点/人物/冲突永远固定在 system 中作为稳定前缀
@@ -230,9 +349,8 @@ function buildSystemPrompt() {
     const coreSnippets = allSnippets.filter(s => CORE_CATEGORIES.includes(s.category));
     const nonCoreSnippets = allSnippets.filter(s => !CORE_CATEGORIES.includes(s.category));
 
-    // 全量 < 20000 字符 → 全部注入 system
+    // 全量 < LORE_FULL_THRESHOLD 字符 → 全部注入 system（阈值单一真相，见文件顶部）
     const fullLoreText = allSnippets.map(s => `[${s.category}：${s.title}]\n${s.content}`).join("\n\n");
-    const LORE_FULL_THRESHOLD = 20000;
     if (fullLoreText.length > 0 && fullLoreText.length < LORE_FULL_THRESHOLD) {
         systemPrompt += "\n\n# 世界观知识库（全量·固定，命中缓存）\n\n以下为该世界全部知识片段，请作为叙事依据：\n\n```\n" + fullLoreText + "\n```";
         isCoreLoreCached = true;
@@ -260,7 +378,13 @@ function buildSystemPrompt() {
     }
 
     // ★ NPC 一致性自检指令（静态，注入 system prompt）
-    systemPrompt += "\n\n# 叙事一致性要求\n\n每次生成叙事前，请确认：\n- 叙事中的 NPC 性格、立场、说话方式是否与之前的描述一致\n- 场景切换是否合理（不能上一段在屋内，下一段突然到了千里之外）\n- 若涉及已知角色，是否引用了他们已有的关系描述\n- 剧情推进是否符合世界观规则，不可出现逻辑跳跃";
+    systemPrompt += "\n\n# 叙事一致性要求\n\n每次生成叙事前，请确认：\n- 叙事中的 NPC 性格、立场、说话方式是否与之前的描述一致\n- 场景切换是否合理（不能上一段在屋内，下一段突然到了千里之外）\n- 若涉及已知角色，是否引用了他们已有的关系描述\n- 剧情推进是否符合世界观规则，不可出现逻辑跳跃\n- NPC 的说话腔调、口头禅、称呼方式一旦确立须保持（详见每轮注入的「NPC 档案」），不得无故改变其语言风格";
+
+    // B2: 状态效果由引擎递减 duration，AI 只列当前生效项（明确契约，避免 AI 误带/误算 duration）
+    systemPrompt += "\n\n# 状态效果与数值规则\n\n- status_effects 的时长由引擎管理，你**只需**在 state_changes.status_effects 中列出**当前仍然生效**的效果（给出 name 与文字说明 desc）。\n- **不要**自行递减或计算 duration；引擎每轮对仍被列出的效果自动 -1，归零即移除。\n- 若某效果已结束，直接**不再列出**它即可（引擎会据此移除）。\n- 新出现的效果若你未给出 duration，引擎默认赋予 3 轮时长；若想指定更久，可在该效果中给出一个 duration 数字。\n- 纯叙事模式下，status_effects 只作文字描述（如\"疲惫\"\"心绪不宁\"），绝不出现数值。";
+
+    // B4: NPC 位置一致性（禁止凭空瞬移）
+    systemPrompt += "\n\n# NPC 位置一致性\n\n- 不得让 NPC 凭空瞬移。若要让某 NPC 离开或到达某处，必须在 state_changes.npc_activity 中更新其位置描述（尽量包含地点名）。\n- 玩家进入某地点时，应让当前在该地点的 NPC 在场；其他地点的 NPC 不应无故出现。";
 
     // P0: 硬化缓存
     cachedSystemPrompt = systemPrompt;
@@ -395,6 +519,51 @@ function buildToneGuide() {
     return toneIndex.join("\n");
 }
 
+// E9: 叙事质感指引——按题材差异化描写风格，把 AI 从"信息报告体"拉回"小说体"，提升沉浸感。
+// 只读取世界的固定属性（name/desc/hero/tags/opening），不引入运行时动态值，故不会破坏 system prompt 缓存。
+function buildNarrativeQualitySection() {
+    const w = currentWorld;
+    if (!w) return "";
+    const tags = w.tags || analyzeWorldTags(w.name, w.desc, w.hero, w.type, w.ip_name);
+    const clues = [w.name, w.desc, w.hero, w.opening_narrative || ""].join(" ");
+
+    // 通用基础：展示而非告知 + 感官密度
+    let guide = "## 叙事质感要求\n\n- 以「展示而非告知」为主：优先用动作、环境、对话传递信息，克制解释性旁白。\n" +
+        "- 每 3-5 段至少一处具体感官细节（气味 / 温度 / 光线 / 触感 / 声音），让读者身临其境。\n" +
+        "- 留白：不必把因果说尽，给读者想象空间；情绪靠细节堆叠而非形容词直给。";
+
+    if (tags.includes("武侠") || tags.includes("修仙") || /仙|侠|剑|江湖|宗门|道/.test(clues)) {
+        guide += "\n- 武侠 / 仙侠向：重意境与留白，以景写情；动作描写简劲有顿挫，少用冗长心理独白；对白宜少而有力，意在言外。";
+    }
+    if (tags.includes("恐怖") || tags.includes("悬疑") || /恐怖|诡异|克苏鲁|怪谈|诅咒|灵异/.test(clues)) {
+        guide += "\n- 恐怖 / 怪谈向：重氛围压迫与未知感，用受限视角与留白制造不安；感官偏向潮湿、寂静、异味等令人不适的微妙信号；不要过早揭示怪物全貌。";
+    }
+    if (tags.includes("校园") || tags.includes("恋爱") || tags.includes("日常") || /校园|恋爱|甜|日常|咖啡|烘焙|田园|种田/.test(clues)) {
+        guide += "\n- 校园 / 日常 / 恋爱向：重生活质感与细腻情绪起伏，用具体的小动作、物件、对话节奏传递情感；允许轻松幽默，不必时刻紧绷。";
+    }
+    if (tags.includes("科幻") || /科幻|太空|机甲|赛博|未来|星际/.test(clues)) {
+        guide += "\n- 科幻向：重冷峻精确的世界细节（技术名词、空间感、系统逻辑），以环境与逻辑的严谨感制造真实；情感藏于克制叙述之下。";
+    }
+    if (tags.includes("宫斗") || tags.includes("古典名著") || /红楼|宫廷|宅斗|世家|府|园/.test(clues)) {
+        guide += "\n- 古典 / 宅斗向：重人情世故与含蓄表达，以衣饰、仪态、场面描写铺陈身份与张力；对白暗藏机锋。";
+    }
+    return guide;
+}
+
+// E10: 环境感官锚点——基于时段的光线/温度模板（零延迟，不调 LLM），作 AI 描写引子
+function buildAmbienceHint(location, period, world) {
+    const map = {
+        morning: "清晨的薄光漫过窗棂，空气里还带着夜的凉意。",
+        forenoon: "上午的日头渐暖，街市开始有了人声。",
+        afternoon: "午后的光影斜长，万物都显得慵懒。",
+        evening: "傍晚的天色染上橘红，归鸟掠过屋檐。",
+        night: "夜色四合，灯火在远处明明灭灭，风里传来说不清的动静。"
+    };
+    let s = map[period] || "此刻光线柔和，周遭安静得能听见自己的呼吸。";
+    if (location) s += "你置身" + location + "。";
+    return s;
+}
+
 // 从世界名称/描述/主角/类型分析并生成标签
 function analyzeWorldTags(name, desc, hero, type, ipName) {
     const clues = [name || "", desc || "", hero || "", ipName || ""].join(" ");
@@ -439,7 +608,7 @@ function isLoreFullInSystem() {
     const kb = getWorldLoreKB();
     const allSnippets = kb && kb.snippets ? kb.snippets : [];
     const fullLoreText = allSnippets.map(s => `[${s.category}：${s.title}]\n${s.content}`).join("\n\n");
-    return fullLoreText.length > 0 && fullLoreText.length < 12000;
+    return fullLoreText.length > 0 && fullLoreText.length < LORE_FULL_THRESHOLD;
 }
 
 // P0: 构建紧凑游戏状态（仅含每轮可能变化的字段，紧凑 JSON 无换行）
@@ -460,7 +629,9 @@ function buildCompactGameState() {
         status_effects: gameState.status_effects,
         npc_activity: gameState.npc_activity || {},
         is_alive: gameState.is_alive,
-        combat_stats: gameState.combat_stats ? {
+        reputation: (typeof gameState.reputation === "number") ? gameState.reputation : 0,
+        tension: (typeof gameState.tension === "number") ? gameState.tension : 0,
+        combat_stats: (!isNarrativeMode() && gameState.combat_stats) ? {
             hp: gameState.combat_stats.hp, max_hp: gameState.combat_stats.max_hp,
             mp: gameState.combat_stats.mp, max_mp: gameState.combat_stats.max_mp,
             ac: gameState.combat_stats.ac,
@@ -484,6 +655,10 @@ function buildCompactGameState() {
 function buildTurnUserMessage(input, retrieved) {
     let userPrompt = "";
 
+    // E10: 环境感官锚点（零延迟，基于时段的光线/温度暗示，作 AI 描写引子）
+    const ambience = buildAmbienceHint(gameState && gameState.current_location, gameState && gameState.current_date && gameState.current_date.period, currentWorld);
+    if (ambience) userPrompt += "# 此刻此地（环境锚点，可作描写引子）\n\n" + ambience + "\n\n";
+
     // ★ 对话历史摘要：用精简的 1-2 句摘要替代被截断的完整对话，大幅降低 token 消耗
     if (chatSummary && chatSummary.length > 0) {
         userPrompt += "# 前情提要（之前发生的故事）\n\n";
@@ -506,6 +681,60 @@ function buildTurnUserMessage(input, retrieved) {
         for (const [npc, desc] of Object.entries(rels)) {
             userPrompt += "- " + npc + "：" + desc + "\n";
         }
+        userPrompt += "\n";
+    }
+
+    // B4: NPC 位置账本提示（结构化，防止 NPC 凭空瞬移）
+    if (gameState && gameState.npc_states && Object.keys(gameState.npc_states).length) {
+        const loc = gameState.current_location;
+        const here = [], elsewhere = [];
+        for (const [name, st] of Object.entries(gameState.npc_states)) {
+            if (st.location === loc) here.push(name);
+            else if (st.location) elsewhere.push(name + "（" + st.location + "）");
+        }
+        userPrompt += "# NPC 位置追踪（结构化）\n";
+        if (here.length) userPrompt += "- 当前地点「" + loc + "」应在场：" + here.join("、") + "\n";
+        if (elsewhere.length) userPrompt += "- 其他地点：" + elsewhere.join("、") + "\n";
+        userPrompt += "（不得随意让 NPC 瞬移；若要让某 NPC 移动，请在 npc_activity 中更新其位置。）\n\n";
+    }
+
+    // E2 + E11: 注入完整 NPC 卡（好感 / 腔调 / 口头禅 / 日程），保持角色"声音"一致
+    if (gameState && gameState.npc_states && Object.keys(gameState.npc_states).length) {
+        userPrompt += "# NPC 档案（保持性格、说话腔调与口头禅一致）\n\n";
+        for (const [name, ns] of Object.entries(gameState.npc_states)) {
+            const a = typeof ns.attitude === "number" ? ns.attitude : null;
+            userPrompt += "- " + name + (a !== null ? "（好感 " + a + "）" : "") + "：心情「" + (ns.mood || "未知") + "」" + (ns.catchphrase ? "，口头禅「" + ns.catchphrase + "」" : "") + "\n";
+            if (ns.speech_style) userPrompt += "  说话风格：" + ns.speech_style + "\n";
+            if (ns.secrets && ns.secrets.length) userPrompt += "  隐秘：" + ns.secrets.join("；") + "\n";
+            if (ns.schedule && Object.keys(ns.schedule).length) userPrompt += "  日常：" + Object.entries(ns.schedule).map(([p, l]) => p + "在" + l).join("，") + "\n";
+        }
+        userPrompt += "\n";
+    }
+
+    // E12 进阶：前世余音（彩蛋）——让 NPC 可能自然「记起」前世旅人的名字
+    if (currentWorld && currentWorld.inherited_legend && currentWorld.inherited_legend.heroName) {
+        const leg = currentWorld.inherited_legend;
+        userPrompt += "# 前世余音（彩蛋 · NPC 可能记起）\n";
+        userPrompt += `- 此世界流传着一位前世旅人「${leg.heroName}」的古老传闻（源自《${leg.worldName || "异世界"}》）。\n`;
+        userPrompt += `- 相关 NPC 可能在闲谈、古籍、遗迹或巧合中自然提起「${leg.heroName}」这个名字或相关传闻；但务必克制、自然，不要每轮都提，也不要让所有 NPC 都知晓——只有与该传闻有缘（如守书人、老者、同名者）的角色才适合提及。\n\n`;
+    }
+
+    // E3: 临近截止的目标——注入紧迫感提示
+    if (gameState && gameState.goals && gameState.goals.length) {
+        const tc = getTimeConfig();
+        const urgent = gameState.goals.filter(g => g.status !== "completed" && g.status !== "failed" && g.deadline && dateCompare(gameState.current_date, g.deadline, tc) >= 0 && dateCompare(gameState.current_date, g.deadline, tc) <= 1);
+        if (urgent.length) {
+            userPrompt += "# 临近截止的目标（请在叙事中施加适度压力）\n\n";
+            for (const g of urgent) userPrompt += `- 「${g.name}」将在第${g.deadline.day}天 ${getPeriodLabel(g.deadline.period)} 前截止，时间紧迫。\n`;
+            userPrompt += "\n";
+        }
+    }
+
+    // E1: 世界动态（世界脉搏）注入——背景氛围，可引用但勿抢主线
+    if (currentWorld && currentWorld.current_world_events && currentWorld.current_world_events.length) {
+        const evs = currentWorld.current_world_events.slice(-5);
+        userPrompt += "# 世界近期动态（背景氛围，可自然引用，勿抢主线）\n\n";
+        for (const e of evs) userPrompt += `- [${e.type || "动态"}] ${e.text}\n`;
         userPrompt += "\n";
     }
 
@@ -666,6 +895,63 @@ async function callLLM(input, retrieved) {
     }
     parsed._turnUserContent = userContent;
     return parsed;
+}
+
+// E1: 世界脉搏——基于当前状态与玩家行为，生成一条"世界自行发生"的动态（传闻/环境/势力/天气）。
+// 不抢主线、不替玩家做决定，仅作氛围与可选线索。结果写入 currentWorld.current_world_events 并经 RAG 注入下一轮。
+async function generateWorldPulse() {
+    if (!currentWorld || !gameState) return;
+    const baseUrl = document.getElementById("baseUrl").value.trim();
+    const apiKey = document.getElementById("apiKey").value.trim();
+    const model = document.getElementById("modelName").value.trim();
+    if (!baseUrl || !apiKey || !model) return;
+
+    const recent = (currentWorld.behavior_records || []).slice(-6).map(b => b.text).join("\n");
+    const events = (currentWorld.current_world_events || []).slice(-4).map(e => e.text).join("\n");
+    const prompt = `# 世界脉搏生成器（背景动态）
+
+你正在为一款 AI 文字游戏维护"世界自己在运转"的氛围。请生成**一条**最近发生的世界动态，风格与世界观一致。
+
+## 约束
+- 类型从以下选一：rumor（传闻/流言）、env（环境变化）、faction（势力动向）、weather（天气）。
+- **不要**推进玩家主线、不要替玩家做决定、不要引入必须响应的危机；它只是"背景里发生的事"。
+- 长度 1-2 句，简洁有画面感。
+- 可与玩家近期行为有间接呼应（如玩家刚帮了某 NPC，镇上开始传他的好话），但不要点名要求玩家行动。
+
+## 当前世界
+- 世界名：${currentWorld.name}
+- 主角当前地点：${gameState.current_location}
+- 当前时间：第 ${gameState.current_date.day} 天 · ${getPeriodLabel(gameState.current_date.period)}
+- 主角近期关键事实：
+${recent || "（暂无）"}
+- 已有世界动态（避免重复）：
+${events || "（暂无）"}
+
+只输出一个 JSON：{"type":"rumor|env|faction|weather","text":"动态内容"}`;
+
+    try {
+        const url = buildApiUrl(baseUrl, document.getElementById("corsProxy").value.trim());
+        const data = await callLLMNonStreaming(url, apiKey, model, [
+            { role: "system", content: prompt },
+            { role: "user", content: "生成一条世界动态。" }
+        ]);
+        const ev = data && data.type ? data : (data && data.text ? { type: "env", text: data.text } : null);
+        if (!ev || !ev.text) return;
+        if (!currentWorld.current_world_events) currentWorld.current_world_events = [];
+        currentWorld.current_world_events.push({
+            id: "we_" + Date.now().toString(36),
+            day: gameState.current_date.day,
+            period: gameState.current_date.period,
+            type: ev.type,
+            text: ev.text
+        });
+        // 限制长度，避免无限增长
+        if (currentWorld.current_world_events.length > 12) {
+            currentWorld.current_world_events = currentWorld.current_world_events.slice(-12);
+        }
+    } catch (e) {
+        console.warn("generateWorldPulse failed:", e.message);
+    }
 }
 
 async function callLLMNonStreaming(url, apiKey, model, messages) {

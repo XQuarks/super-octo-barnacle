@@ -1,0 +1,138 @@
+{
+  "dnd": {
+    "id": "dnd",
+    "name": "D&D 奇幻",
+    "desc": "经典龙与地下城规则。六属性、D20检定、种族职业、回合制战斗",
+    "icon": "⚔️",
+    "attributes": [
+      { "key": "strength", "label": "力量", "abbr": "STR" },
+      { "key": "dexterity", "label": "敏捷", "abbr": "DEX" },
+      { "key": "constitution", "label": "体质", "abbr": "CON" },
+      { "key": "intelligence", "label": "智力", "abbr": "INT" },
+      { "key": "wisdom", "label": "感知", "abbr": "WIS" },
+      { "key": "charisma", "label": "魅力", "abbr": "CHA" }
+    ],
+    "actions": ["attack", "cast", "sneak", "persuade", "survey", "survive"],
+    "dice_type": "d20",
+    "has_combat": true,
+    "has_classes": true,
+    "has_races": true,
+    "base_hp": 10,
+    "base_mp": 4,
+    "base_ac": 10
+  },
+
+  "cthulhu": {
+    "id": "cthulhu",
+    "name": "克苏鲁恐怖",
+    "desc": "理智值系统、D100检定。调查未知、对抗疯狂，战斗往往是最后的手段",
+    "icon": "🐙",
+    "attributes": [
+      { "key": "sanity", "label": "理智", "abbr": "SAN" },
+      { "key": "knowledge", "label": "知识", "abbr": "KNW" },
+      { "key": "willpower", "label": "意志", "abbr": "WIL" },
+      { "key": "fitness", "label": "体能", "abbr": "FIT" }
+    ],
+    "actions": ["investigate", "confront", "escape", "ritual"],
+    "dice_type": "d100",
+    "has_combat": false,
+    "has_classes": false,
+    "has_races": false,
+    "base_hp": 8,
+    "base_mp": 10,
+    "base_ac": 8,
+    "templates": {
+      "detective": { "name": "侦探", "desc": "敏锐的观察者，追寻不可言说的真相", "attr_bonus": { "knowledge": 2, "sanity": -5 } },
+      "scholar": { "name": "学者", "desc": "古老典籍的研究者，知道太多不该知道的事", "attr_bonus": { "knowledge": 3, "sanity": -8 } },
+      "reporter": { "name": "记者", "desc": "好奇心驱动的调查者，总是第一个到现场", "attr_bonus": { "knowledge": 1, "willpower": 1 } },
+      "survivor": { "name": "幸存者", "desc": "曾遭遇恐怖并活下来的人，意志比常人坚韧", "attr_bonus": { "willpower": 2, "fitness": 1 } }
+    }
+  },
+
+  "scifi": {
+    "id": "scifi",
+    "name": "科幻",
+    "desc": "技能检定系统。技术骇入、星际交涉、能量战斗",
+    "icon": "🚀",
+    "attributes": [
+      { "key": "tech", "label": "技术", "abbr": "TEC" },
+      { "key": "social", "label": "社交", "abbr": "SOC" },
+      { "key": "combat", "label": "战斗", "abbr": "CMB" },
+      { "key": "perception", "label": "感知", "abbr": "PER" }
+    ],
+    "actions": ["hack", "negotiate", "fight", "scan", "engineer"],
+    "dice_type": "skill_check",
+    "has_combat": true,
+    "has_classes": false,
+    "has_races": true,
+    "base_hp": 12,
+    "base_mp": 8,
+    "base_ac": 10,
+    "templates": {
+      "hacker": { "name": "骇客", "desc": "数字世界的幽灵，能穿透任何防火墙", "attr_bonus": { "tech": 3, "combat": -1 } },
+      "diplomat": { "name": "外交官", "desc": "星际政治的棋手，言辞是最锋利的武器", "attr_bonus": { "social": 3, "combat": -2 } },
+      "soldier": { "name": "士兵", "desc": "训练有素的战士，适应各种战场环境", "attr_bonus": { "combat": 2, "perception": 1 } },
+      "explorer": { "name": "探索者", "desc": "未知星域的先驱，感知力超群", "attr_bonus": { "perception": 3, "social": -1 } }
+    }
+  },
+
+  "modern": {
+    "id": "modern",
+    "name": "现代",
+    "desc": "轻量技能检定。都市冒险、社会博弈、信息战",
+    "icon": "🏙️",
+    "attributes": [
+      { "key": "intellect", "label": "智力", "abbr": "INT" },
+      { "key": "charm", "label": "魅力", "abbr": "CHA" },
+      { "key": "fitness", "label": "体能", "abbr": "FIT" },
+      { "key": "tech", "label": "技术", "abbr": "TEC" }
+    ],
+    "actions": ["persuade", "investigate", "fight", "sneak", "hack"],
+    "dice_type": "skill_check",
+    "has_combat": true,
+    "has_classes": false,
+    "has_races": false,
+    "base_hp": 10,
+    "base_mp": 6,
+    "base_ac": 10,
+    "templates": {
+      "agent": { "name": "特工", "desc": "受过专业训练的行动者", "attr_bonus": { "fitness": 2, "tech": 1 } },
+      "analyst": { "name": "分析师", "desc": "信息处理的专家，总能发现线索", "attr_bonus": { "intellect": 3, "fitness": -2 } },
+      "face": { "name": "交际花", "desc": "社交场上的王牌，无往不利的说客", "attr_bonus": { "charm": 3, "tech": -1 } },
+      "operator": { "name": "技术员", "desc": "精通各种设备与系统的技术达人", "attr_bonus": { "tech": 3, "charm": -1 } }
+    }
+  },
+
+  "narrative": {
+    "id": "narrative",
+    "name": "纯叙事",
+    "desc": "无骰子、无属性、无战斗系统。完全由AI叙事驱动的自由体验",
+    "icon": "📖",
+    "attributes": [],
+    "actions": [],
+    "dice_type": "none",
+    "has_combat": false,
+    "has_classes": false,
+    "has_races": false,
+    "base_hp": 0,
+    "base_mp": 0,
+    "base_ac": 0
+  },
+
+  "ai": {
+    "id": "ai",
+    "name": "AI 生成规则",
+    "desc": "根据世界观描述，由AI自动创造一套适配的轻量规则",
+    "icon": "🤖",
+    "attributes": [],
+    "actions": [],
+    "dice_type": "auto",
+    "has_combat": false,
+    "has_classes": false,
+    "has_races": false,
+    "base_hp": 0,
+    "base_mp": 0,
+    "base_ac": 0,
+    "note": "选择此项后，AI将在生成世界时自动设计角色属性、可用动作和骰子机制"
+  }
+}

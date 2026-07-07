@@ -266,6 +266,19 @@ window.ActionMenu = (function() {
       return;
     }
 
+    // ★ 双模式：纯叙事（AI 文字扮演冒险）不掷骰、不改数值，动作按钮仅作自由输入提示
+    if (typeof isNarrativeMode === 'function' && isNarrativeMode()) {
+      var narrativeInput = buildAutoInput(actionType, {}, gs);
+      var nInput = document.getElementById('playerInput');
+      if (nInput && narrativeInput) {
+        nInput.value = narrativeInput;
+        if (typeof window.submitInput === 'function') {
+          window.submitInput();
+        }
+      }
+      return;
+    }
+
     var result = dispatch(actionType, gs);
 
     // 填入输入框

@@ -61,7 +61,7 @@ window.CharacterCreatorUI = (function() {
       document.getElementById('ccRaceList').innerHTML = '<p class="cc-loading">加载种族数据...</p>';
       return;
     }
-    var data = _races || {};
+    var data = CharacterCreator.getRaces() || {};
     var html = '';
     Object.keys(data).forEach(function(key) {
       var race = data[key];
@@ -91,7 +91,7 @@ window.CharacterCreatorUI = (function() {
   // ===== Step 2: 职业选择 =====
   function renderClassSelection() {
     if (!CharacterCreator.isLoaded()) return;
-    var data = _classes || {};
+    var data = CharacterCreator.getClasses() || {};
     var html = '';
     Object.keys(data).forEach(function(key) {
       var cls = data[key];

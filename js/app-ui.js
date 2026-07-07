@@ -19,6 +19,12 @@ async function init() {
         if (res.ok) loreEmbeddings = await res.json();
     } catch (e) { console.warn("向量知识库加载失败:", e.message); loreEmbeddings = null; }
 
+    // A1: 将预计算向量合并进默认知识库（原代码加载后从未合并，导致混合 RAG 退化）
+    if (loreEmbeddings && loreEmbeddings.snippets && loreKB && loreKB.snippets) {
+        const embMap = new Map(loreEmbeddings.snippets.map(s => [s.id, s.embedding]));
+        loreKB.snippets.forEach(s => { if (embMap.has(s.id)) s.embedding = embMap.get(s.id); });
+    }
+
     try {
         const res = await fetch("./data/system_prompt_template.md");
         if (!res.ok) throw new Error("HTTP " + res.status);
@@ -39,6 +45,12 @@ async function init() {
         await CharacterCreator.loadDataFile("./data/character_creation.json");
         console.log("角色创建数据加载完成");
     } catch (e) { console.warn("character_creation.json 加载失败:", e.message); }
+
+    // ★ 加载规则集
+    try {
+        var rsRes = await fetch("./data/rulesets.json");
+        if (rsRes.ok) window.RULESETS = await rsRes.json();
+    } catch (e) { console.warn("rulesets.json 加载失败:", e.message); }
 
     try {
         const res = await fetch("./data/initial_state.json");
@@ -79,6 +91,13 @@ async function init() {
                 if (!embeddingModel) {
                     embeddingModel = await transformers.pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2");
                     console.log("Embedding model pre-warmed");
+                }
+                // A1: 为尚未带向量的世界补齐（含示例世界），让混合 RAG 对所有世界生效
+                if (typeof worlds !== "undefined" && worlds.length) {
+                    for (const w of worlds) {
+                        try { await computeEmbeddingsForWorld(w); } catch (e) {}
+                    }
+                    if (typeof saveWorlds === "function") saveWorlds();
                 }
             } catch (e) { console.warn("Embedding model pre-warm failed:", e.message); }
         }, 500);
@@ -264,7 +283,9 @@ function createHongLouMengWorld() {
         behavior_records: [],
         style_ref: "original",
         custom_style: "",
-        plot_freedom: 2,
+        ruleset_type: "dnd",
+        rule_freedom: 2,
+        world_freedom: 2,
         custom_prefix: ""
     };
 }
@@ -386,7 +407,9 @@ function createMagicAcademyWorld() {
         behavior_records: [],
         style_ref: "none",
         custom_style: "",
-        plot_freedom: 4,
+        ruleset_type: "dnd",
+        rule_freedom: 4,
+        world_freedom: 4,
         custom_prefix: ""
     };
 }
@@ -397,11 +420,37 @@ function loadSaves() {
 }
 
 function saveWorlds() {
-    localStorage.setItem(STORAGE_KEYS.worlds, JSON.stringify(worlds));
+    try {
+        // 不持久化片段向量（384 维 embedding），避免 localStorage 膨胀/配额超限；
+        // 向量在加载时由 computeEmbeddingsForWorld 重新计算（见 init）。
+        localStorage.setItem(STORAGE_KEYS.worlds, JSON.stringify(worlds, (k, v) => (k === "embedding" ? undefined : v)));
+    } catch (e) {
+        console.error("worlds 持久化失败:", e.message);
+    }
 }
 
 function saveSaves() {
     localStorage.setItem(STORAGE_KEYS.saves, JSON.stringify(saves));
+}
+
+/* ================= E12 跨周目传承：传说本地存档 ================= */
+function loadLegends() {
+    try {
+        const data = localStorage.getItem(STORAGE_KEYS.legends);
+        return data ? JSON.parse(data) : [];
+    } catch (e) {
+        console.warn("legends 读取失败:", e.message);
+        return [];
+    }
+}
+
+function saveLegend(legend) {
+    if (!legend || !legend.id) return;
+    const list = loadLegends().filter(l => l.id !== legend.id);
+    list.unshift(legend);
+    // 最多保留 20 段传说，避免 localStorage 膨胀
+    const capped = list.slice(0, 20);
+    localStorage.setItem(STORAGE_KEYS.legends, JSON.stringify(capped));
 }
 
 function saveState(serialized) {
@@ -573,7 +622,10 @@ function showSettingsModal() {
     updateFontSizeButtons();
 }
 
-let fontSizeSetting = localStorage.getItem("aigame_fontsize") || "normal";
+let fontSizeSetting = localStorage.getItem("octo_fontsize") || "normal";
+
+// E12：待带入新世界的传说（由「带入新世界」或导入文件设置）
+var pendingInheritedLegend = null;
 
 function applyFontSize() {
     const zooms = { small: "0.85", normal: "1", large: "1.18" };
@@ -582,7 +634,7 @@ function applyFontSize() {
 
 function changeFontSize(size) {
     fontSizeSetting = size;
-    localStorage.setItem("aigame_fontsize", size);
+    localStorage.setItem("octo_fontsize", size);
     applyFontSize();
     updateFontSizeButtons();
 }
@@ -594,7 +646,7 @@ function updateFontSizeButtons() {
     });
 }
 
-let temperatureSetting = parseFloat(localStorage.getItem("aigame_temperature") || "0.5");
+let temperatureSetting = parseFloat(localStorage.getItem("octo_temperature") || "0.5");
 
 function showSettingsModal() {
     showModal("settingsModal");
@@ -606,7 +658,7 @@ function showSettingsModal() {
 function updateTempLabel() {
     const v = parseFloat(document.getElementById("temperatureSlider").value);
     temperatureSetting = v;
-    localStorage.setItem("aigame_temperature", v.toString());
+    localStorage.setItem("octo_temperature", v.toString());
     const desc = v <= 0.3 ? "严谨模式（高度一致）" : v <= 0.5 ? "剧情模式（稳定连贯）" : v <= 0.7 ? "均衡模式（适中开放）" : "创意模式（自由发散）";
     document.getElementById("tempLabel").textContent = v.toFixed(1) + " — " + desc;
 }
@@ -616,7 +668,79 @@ function getTemperature() {
 }
 
 function showCreateWorldModal() {
+    resetCwTabs();
     showModal("createWorldModal");
+    // E12：打开创建界面时刷新「带入传说」提示
+    refreshInheritedLegendUI();
+}
+
+/* ================= E12 跨周目传承：导出 / 带入 / 导入 ================= */
+function downloadLegendFile(legend) {
+    if (!legend) return;
+    const data = JSON.stringify(legend, null, 2);
+    const blob = new Blob([data], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `传说_${legend.worldName}_${legend.endedAt.slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+
+function exportLegend() {
+    const legend = window.lastLegend;
+    if (!legend) { showToast("暂无可导出的传说", "error"); return; }
+    downloadLegendFile(legend);
+    showToast("传说已导出为 JSON 文件", "success");
+}
+
+function inheritLegendToNewWorld() {
+    const legend = window.lastLegend;
+    if (!legend) { showToast("暂无可带入的传说", "error"); return; }
+    pendingInheritedLegend = legend;
+    showCreateWorldModal();
+    showToast("已带入上一段传说，创建世界时会作为彩蛋注入", "success");
+}
+
+// 在创建世界弹窗中显示/隐藏「将带入传说」提示
+function refreshInheritedLegendUI() {
+    const notice = document.getElementById("inheritedLegendNotice");
+    if (!notice) return;
+    if (pendingInheritedLegend) {
+        document.getElementById("inheritedLegendName").textContent =
+            pendingInheritedLegend.worldName + "（" + pendingInheritedLegend.reputationTitle + "）";
+        notice.style.display = "flex";
+    } else {
+        notice.style.display = "none";
+    }
+}
+
+function clearInheritedLegend() {
+    pendingInheritedLegend = null;
+    refreshInheritedLegendUI();
+    showToast("已取消带入传说", "info");
+}
+
+// 从导出的 JSON 文件导入传说
+function importLegendFile(event) {
+    const file = event.target.files && event.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function () {
+        try {
+            const legend = JSON.parse(reader.result);
+            if (!legend || !legend.summary) throw new Error("文件格式不正确");
+            pendingInheritedLegend = legend;
+            refreshInheritedLegendUI();
+            showToast("已导入传说：" + (legend.worldName || "未知世界"), "success");
+        } catch (e) {
+            showToast("传说文件解析失败：" + e.message, "error");
+        }
+    };
+    reader.readAsText(file);
+    event.target.value = "";
 }
 
 function saveApiConfig() {
@@ -753,6 +877,77 @@ function formatFileSize(bytes) {
     return (bytes / (1024 * 1024)).toFixed(1) + " MB";
 }
 
+/* ================ 创建世界页签导航 ================ */
+var cwCurrentTab = 0;
+var cwTabOrder = ['cwSettings', 'cwRules', 'cwStyle', 'cwAdvanced'];
+
+function cwSwitchTab(index) {
+    cwCurrentTab = index;
+    cwTabOrder.forEach(function(id, i) {
+        var panel = document.getElementById(id);
+        var tab = document.querySelector('#cwTabs .cw-tab[data-tab="' + id + '"]');
+        if (panel) panel.classList.toggle('show', i === index);
+        if (tab) tab.classList.toggle('active', i === index);
+    });
+    var indicator = document.getElementById('cwTabIndicator');
+    if (indicator) indicator.textContent = (index + 1) + '/' + cwTabOrder.length;
+
+    var prevBtn = document.getElementById('cwPrevBtn');
+    var nextBtn = document.getElementById('cwNextBtn');
+    if (prevBtn) prevBtn.style.display = index === 0 ? 'none' : '';
+    if (nextBtn) nextBtn.textContent = index === cwTabOrder.length - 1 ? '确认生成' : '下一步';
+}
+
+function cwNextTab() {
+    if (cwCurrentTab < cwTabOrder.length - 1) {
+        cwSwitchTab(cwCurrentTab + 1);
+    } else {
+        generateWorld();
+    }
+}
+
+function cwPrevTab() {
+    if (cwCurrentTab > 0) cwSwitchTab(cwCurrentTab - 1);
+}
+
+// 页签点击
+document.addEventListener('DOMContentLoaded', function() {
+    var tabBtns = document.querySelectorAll('#cwTabs .cw-tab');
+    tabBtns.forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            var idx = cwTabOrder.indexOf(this.getAttribute('data-tab'));
+            if (idx >= 0) cwSwitchTab(idx);
+        });
+    });
+});
+
+// ★ 重置页签到第一页
+function resetCwTabs() {
+    cwCurrentTab = 0;
+    cwSwitchTab(0);
+}
+
+/* ================ 规则集选择 ================ */
+var selectedRuleset = 'dnd';
+
+function selectRuleset(id, el) {
+    selectedRuleset = id;
+    document.querySelectorAll('.ruleset-card').forEach(function(c) { c.classList.remove('selected'); });
+    if (el) el.classList.add('selected');
+}
+
+function updateRuleFreedomLabel(value) {
+    var labels = [null, '高度规则 — 骰子严格决定一切', '偏规则 — 骰子主导，叙事辅助', '适中 — 规则约束与叙事自由平衡', '偏叙事 — 叙事主导，骰子辅助', '极简规则 — 几乎纯叙事体验'];
+    var el = document.getElementById('ruleFreedomLabel');
+    if (el) el.textContent = labels[value] || '';
+}
+
+function updateWorldFreedomLabel(value) {
+    var labels = [null, '严格遵循源材料 — 剧情不偏离设定', '以源材料为锚 — 在设定内发展', '适中 — 参考世界观，适度创新', '自由发挥 — 只保留核心设定框架', '完全自由 — 仅借用世界观背景'];
+    var el = document.getElementById('worldFreedomLabel');
+    if (el) el.textContent = labels[value] || '';
+}
+
 /* ================= 文风 & 自由度选择 ================= */
 function onWorldTypeChange(value) {
     const ipNameField = document.getElementById("ipNameField");
@@ -791,17 +986,6 @@ function getSelectedStyleRef() {
     return checked ? checked.value : "original";
 }
 
-function updatePlotFreedomLabel(value) {
-    const labels = {
-        1: "严格遵循原著 — 剧情走向基本不偏离",
-        2: "以原著为主 — 偶尔有限发散",
-        3: "适中发散 — 在原著世界观内适度创新",
-        4: "自由发挥 — 世界观为框架，剧情大胆创新",
-        5: "完全自由 — 仅用世界框架，剧情独立发展"
-    };
-    document.getElementById("plotFreedomLabel").textContent = labels[value] || "";
-}
-
 /* ================= 特殊要求 ================= */
 function toggleCustomPrefix(enabled, el) {
     document.querySelectorAll("#customPrefixGroup .radio-option").forEach(o => o.classList.remove("selected"));
@@ -838,11 +1022,14 @@ async function generateWorld() {
     const ipName = type === "ip" ? document.getElementById("ipName").value.trim() : "";
     const styleRef = getSelectedStyleRef();
     const customStyle = styleRef === "custom" ? document.getElementById("customStyle").value.trim() : "";
-    const plotFreedom = parseInt(document.getElementById("plotFreedom").value);
+    const rulesetType = selectedRuleset || 'dnd';
+    const ruleFreedom = parseInt(document.getElementById("ruleFreedom").value);
+    const worldFreedom = parseInt(document.getElementById("worldFreedom").value);
     const prefixEnabled = document.querySelector("input[name='customPrefixEnable']:checked");
     const customPrefix = (prefixEnabled && prefixEnabled.value === "on") ? document.getElementById("customPrefix").value.trim() : "";
     const worldPrefixEnabled = document.querySelector("input[name='worldPrefixEnable']:checked");
     const worldPrefix = (worldPrefixEnabled && worldPrefixEnabled.value === "on") ? document.getElementById("worldPrefix").value.trim() : "";
+    const narrativeAnchors = document.getElementById("narrativeAnchors") ? document.getElementById("narrativeAnchors").value.trim() : "";
 
     if (!name || !desc) {
         showToast("请填写世界名称和世界观描述", "error");
@@ -858,7 +1045,7 @@ async function generateWorld() {
     btn.textContent = "生成中...";
 
     try {
-        const generated = await callWorldGenerationLLM(name, type, desc, hero, ipName, sourceFileContent, styleRef, customStyle, plotFreedom, worldPrefix);
+        const generated = await callWorldGenerationLLM(name, type, desc, hero, ipName, sourceFileContent, styleRef, customStyle, rulesetType, ruleFreedom, worldFreedom, worldPrefix);
         const world = {
             id: "w" + Date.now(),
             name,
@@ -871,16 +1058,51 @@ async function generateWorld() {
             schema: generated.schema || defaultWorldSchema(name + " " + desc),
             initial_state: generated.initial_state,
             lore_kb: generated.lore_kb,
+            // E12：将上一段传说作为彩蛋注入知识库，并挂接引用
+            inherited_legend: null,
             opening_narrative: generated.opening_narrative || "",
             initial_choices: generated.initial_choices || [],
             system_prompt: generated.system_prompt,
-            behavior_records: [],
+            behavior_records: narrativeAnchors ? [{ id: "b_anchor_" + Date.now().toString(36), text: "主角叙事锚点：" + narrativeAnchors, createdAt: new Date().toISOString() }] : [],
+            narrative_anchors: narrativeAnchors || (generated.initial_state && generated.initial_state.narrative_anchors) || "",
             source_content: sourceFileContent || "",
             style_ref: styleRef,
             custom_style: customStyle,
-            plot_freedom: plotFreedom,
+            ruleset_type: rulesetType,
+            rule_freedom: ruleFreedom,
+            world_freedom: worldFreedom,
             custom_prefix: customPrefix
         };
+
+        // A1: 为新建世界的知识片段补齐向量（与预计算向量同格式）
+        await computeEmbeddingsForWorld(world);
+
+        // E12：将上一段传说作为彩蛋写入知识库，并标记继承引用
+        if (pendingInheritedLegend) {
+            const leg = pendingInheritedLegend;
+            const legHeroName = leg.heroName || "一位无名旅人";
+            const legendSnippet = {
+                id: "b_legend_" + Date.now().toString(36),
+                category: "事件",
+                title: "久远传说：" + leg.worldName,
+                content: "（彩蛋·前世余音）据古老传闻，曾有一位名为「" + legHeroName + "」的旅人在此世界留下传说——" + leg.summary + "也许在某个角落，仍有人记得这个名字，或在古籍、遗迹中留下过印记。",
+                keywords: ["传说", "彩蛋", "前世余音", legHeroName, leg.worldName]
+            };
+            if (world.lore_kb && Array.isArray(world.lore_kb.snippets)) {
+                world.lore_kb.snippets.push(legendSnippet);
+            } else {
+                world.lore_kb = { ip: world.name, snippets: [legendSnippet] };
+            }
+            world.inherited_legend = { id: leg.id, worldName: leg.worldName, heroName: leg.heroName, summary: leg.summary };
+            pendingInheritedLegend = null;
+            refreshInheritedLegendUI();
+        }
+
+        // 纯叙事模式：剥离战斗数值（保持叙事纯净）
+        if (rulesetType === "narrative" && world.initial_state && world.initial_state.combat_stats) {
+            delete world.initial_state.combat_stats;
+        }
+
         worlds.unshift(world);
         saveWorlds();
         // 调试日志：记录世界创建
@@ -889,7 +1111,7 @@ async function generateWorld() {
             worldName: name,
             worldType: type,
             ipName: ipName || null,
-            plotFreedom: plotFreedom,
+            ruleFreedom: ruleFreedom,
             loreSnippets: world.lore_kb ? world.lore_kb.snippets.length : 0,
             openingTextLen: (world.opening_narrative || "").length
         });
@@ -912,9 +1134,9 @@ async function generateWorld() {
         clearSourceFile();
         closeModal("createWorldModal");
 
-        // ★ CRPG: 角色创建
+        // ★ CRPG: 角色创建（纯叙事模式跳过，无战斗数值/职业/种族）
         var latestWorld = worlds[0];
-        if (typeof CharacterCreatorUI !== "undefined" && CharacterCreator.isLoaded()) {
+        if (rulesetType !== "narrative" && typeof CharacterCreatorUI !== "undefined" && CharacterCreator.isLoaded()) {
             showToast("世界已创建，请配置你的角色...", "success", 1500);
             setTimeout(function() {
                 CharacterCreatorUI.show(function(result) {
@@ -945,7 +1167,7 @@ async function generateWorld() {
     }
 }
 
-async function callWorldGenerationLLM(name, type, desc, hero, ipName, sourceContent, styleRef, customStyle, plotFreedom, worldPrefix) {
+async function callWorldGenerationLLM(name, type, desc, hero, ipName, sourceContent, styleRef, customStyle, rulesetType, ruleFreedom, worldFreedom, worldPrefix) {
     const mock = document.getElementById("mockMode").checked;
     if (mock) {
         await sleep(1200);
@@ -960,7 +1182,7 @@ async function callWorldGenerationLLM(name, type, desc, hero, ipName, sourceCont
         throw new Error("请填写 Base URL、API Key 和模型名称，或开启模拟模式。");
     }
 
-    const prompt = buildWorldGenerationPrompt(name, type, desc, hero, ipName, sourceContent, styleRef, customStyle, plotFreedom, worldPrefix);
+    const prompt = buildWorldGenerationPrompt(name, type, desc, hero, ipName, sourceContent, styleRef, customStyle, rulesetType, ruleFreedom, worldFreedom, worldPrefix, pendingInheritedLegend);
     const url = buildApiUrl(baseUrl, corsProxy);
     const res = await fetch(url, {
         method: "POST",
@@ -985,14 +1207,29 @@ async function callWorldGenerationLLM(name, type, desc, hero, ipName, sourceCont
     return parseResponse(content);
 }
 
-function buildWorldGenerationPrompt(name, type, desc, hero, ipName, sourceContent, styleRef, customStyle, plotFreedom, worldPrefix) {
-    const plotFreedomDesc = {
-        1: "严格遵循原著 — 关键剧情节点、重要事件必须按原著发生，AI 不得偏移主线。",
-        2: "以原著为主 — 主线遵循原著，但在支线和日常互动上可以有限发散。",
-        3: "适中发散 — 以原著世界观为框架，剧情可在合理范围内创新和延伸。",
-        4: "自由发挥 — 世界观为框架，剧情走向由 AI 和玩家自由创造。",
-        5: "完全自由 — 仅使用世界基本框架和设定，所有剧情由 AI 独立生成。"
+function buildWorldGenerationPrompt(name, type, desc, hero, ipName, sourceContent, styleRef, customStyle, rulesetType, ruleFreedom, worldFreedom, worldPrefix, inheritedLegend) {
+    var worldFreedomDesc = {
+        1: "严格遵循源材料：世界观设定、人物关系、核心事件必须与源材料保持一致，不得主观创作偏离源材料的内容。",
+        2: "以源材料为锚：在世界观框架内发展剧情，关键设定保持不变，细节上可以有合理延伸。",
+        3: "适中等散：参考世界观的框架设定，剧情和人物可在合理范围内创新和延伸。",
+        4: "自由发挥：只保留世界观的核心设定和文化背景，剧情和人物关系由AI自由创作。",
+        5: "完全自由：仅借用世界观的基本概念和氛围，一切剧情和设定由AI独立生成。"
     };
+
+    var rulesetInfo = '';
+    if (rulesetType === 'dnd') {
+        rulesetInfo = '\n## 规则集\n当前使用 D&D 奇幻规则集。角色使用六属性(STR/DEX/CON/INT/WIS/CHA)，支持种族和职业选择，战斗使用 D20 回合制。请在初始状态和知识库中融入D&D风格的奇幻元素。';
+    } else if (rulesetType === 'cthulhu') {
+        rulesetInfo = '\n## 规则集\n当前使用克苏鲁恐怖规则集。角色使用理智/知识/意志/体能属性，侧重调查和生存而非战斗。请在初始状态和知识库中营造克苏鲁风格的压抑、未知和恐怖氛围。';
+    } else if (rulesetType === 'scifi') {
+        rulesetInfo = '\n## 规则集\n当前使用科幻规则集。角色使用技术/社交/战斗/感知属性，侧重科技辅助和星际探索。请在初始状态和知识库中体现未来科技感。';
+    } else if (rulesetType === 'modern') {
+        rulesetInfo = '\n## 规则集\n当前使用现代规则集。角色使用智力/魅力/体能/技术属性，侧重都市冒险和社会博弈。请在初始状态和知识库中体现现代都市氛围。';
+    } else if (rulesetType === 'narrative') {
+        rulesetInfo = '\n## 规则集\n当前使用纯叙事模式（AI 文字扮演冒险）。无骰子、无属性、无战斗系统、无 HP/MP/AC 数值，所有剧情由 AI 叙事驱动。\n- initial_state 中不要包含 combat_stats；attributes / relationships / skills 全部用文字描述。\n- 请专注于叙事质量、人物心理、关系演变与氛围描写，把玩家的"攻击/施法/休息"等输入理解为叙事意图而非掷骰。\n- 用 state_changes.reputation（声望/名号）和 state_changes.tension（危机张力）来体现成长与张力，替代数值升级；用 npc_states[].attitude 体现 NPC 好感变化；用 narrative_anchors 埋下主角的执念/秘密/禁忌，并让 NPC 在后续互动中适时引用。';
+    } else if (rulesetType === 'ai') {
+        rulesetInfo = '\n## 规则集\n当前使用「AI 生成规则」：请你根据世界观自动设计一套轻量且自洽的规则（属性维度、可用动作、是否使用骰子、战斗如何处理），并在 schema 与 initial_state 中体现。规则应服务于叙事，不要过度复杂。';
+    }
 
     const styleRefDesc = {
         original: "请参考源文件的文风和叙事节奏进行生成。",
@@ -1013,6 +1250,10 @@ function buildWorldGenerationPrompt(name, type, desc, hero, ipName, sourceConten
         : `\n- 知识库至少生成 8 条，每条 100-300 字。`;
 
     const prefixSection = worldPrefix ? worldPrefix + "\n\n" : "";
+
+    const legendSection = (inheritedLegend && inheritedLegend.summary)
+        ? `\n# 跨周目传承彩蛋（前世传说）\n\n玩家选择带入了一段来自其他周目/世界的传说，请将其作为「世界背景中的古老传闻」自然地融入本次生成：\n- 传说概览：${inheritedLegend.summary}\n- 前世旅人姓名：「${inheritedLegend.heroName || "无名旅人"}」（这是 NPC 可能在对话中提及的名字）\n- 来源世界：${inheritedLegend.worldName}（传说主角名号：${inheritedLegend.reputationTitle || "未知"}）\n要求：\n1. 在 lore_kb 的「事件」或「冲突」类片段中，用 1 条隐晦地提及这段传闻（例如某个 NPC 提及、某本古籍记载、某处遗迹铭文），可以点出前世旅人的名字「${inheritedLegend.heroName || "无名旅人"}」，但不要喧宾夺主。\n2. 在 opening_narrative 里可若有若无地埋下呼应（如"据说很多年前，也曾有一位名为「${inheritedLegend.heroName || "某人"}」的旅人走过同样的路"），但不要让玩家立刻察觉这是前世。\n3. 不要改动本世界自身的核心设定来迎合这段传说。\n`
+        : "";
     return prefixSection + `你是专业的文字游戏世界观设计师。请根据以下信息，为一个 AI 文字游戏生成完整的世界配置。
 
 # 输入
@@ -1032,9 +1273,10 @@ ${sourceSection}
 
 ${styleRefDesc[styleRef] || styleRefDesc.none}
 
-# 剧情控制
+# 自由度控制
 
-${plotFreedomDesc[plotFreedom] || plotFreedomDesc[3]}
+${worldFreedomDesc[worldFreedom] || worldFreedomDesc[3]}
+${rulesetInfo}
 
 # 输出要求
 
@@ -1059,8 +1301,12 @@ ${plotFreedomDesc[plotFreedom] || plotFreedomDesc[3]}
    - completed_events: []
    - current_location: 初始地点
    - current_date: {day, period}
-   - goals: [{goal_id, name, type, deadline:{day,period}, visible}]
+   - goals: [{goal_id, name, type, tier:"main"|"side"|"personal", deadline:{day,period}, progress:0, visible}]
    - status_effects: []
+   - npc_states: {NPC名: {attitude: 数值(-100..100，初始对主角的好感，正数友好负数敌视), mood: "当前心情文字", schedule: {morning:"常去地点",night:"常去地点"}(按本世界时段填日常行程), secrets: ["该 NPC 隐瞒的事"], speech_style: "说话风格描述", catchphrase: "口头禅或标志性用语"}}。请为 lore_kb 中每个关键 NPC 都生成初始 npc_states。
+   - reputation: 0（纯叙事/无数值世界的成长度量，替代属性升级；跑团世界可忽略）
+   - tension: 0（世界当前的危机张力，0=平静，100=危如累卵）
+   - narrative_anchors: {obsession:"主角的执念", secret:"主角隐藏的秘密", taboo:"主角不可触碰的禁忌"}（若主角设定里隐含，请据实填充；纯叙事模式尤其重要）
    - is_alive: true
    - death_reason: null
 
@@ -1071,7 +1317,7 @@ ${plotFreedomDesc[plotFreedom] || plotFreedomDesc[3]}
    各 category 要求：
    - 冲突（至少 2 条）：世界的核心矛盾与张力，谁和谁对立，为什么，玩家可能被卷入哪一方。示例：金玉良缘vs木石前盟、家族利益vs个人情感、正邪之争。
    - 事件（至少 2 条）：可触发的事件，每条需包含触发条件（时间+地点+可能的前置条件），以及事件内容和后果。
-   - 人物片段中需附带该角色的**日常行程**（什么时间在什么地方）
+   - 人物片段中需附带该角色的**日常行程**（什么时间在什么地方）以及说话风格(speech_style)与口头禅(catchphrase)的简短描述
    ${lengthLimitSection}
 
 4. system_prompt: 用于游戏运行时的 System Prompt 字符串，要包含世界观硬约束、叙事风格、输出格式说明。
@@ -1086,6 +1332,7 @@ ${plotFreedomDesc[plotFreedom] || plotFreedomDesc[3]}
 
 # 注意
 
+${legendSection}
 - 所有内容要符合该世界的力量体系，不要跨世界观混杂。
 - ${type === "ip" ? "已有 IP 不要篡改不可改变的核心设定和关键角色命运。" : "原创世界请保持内部逻辑自洽。"}
 - attributes / relationships / skills 全部使用文字描述，不要输出数字。
@@ -1381,10 +1628,15 @@ function showWorldDetail(worldId) {
             <label>文风参考</label>
             <p style="margin:0;font-size:14px;color:var(--text-secondary);">${currentWorld.style_ref === "original" ? "参考原版文风" : currentWorld.style_ref === "custom" ? "自定义文风：" + (currentWorld.custom_style || "未填写") : "不参考文风"}</p>
         </div>` : ""}
-        ${currentWorld.plot_freedom ? `
+        ${currentWorld.ruleset_type ? `
         <div class="form-group">
-            <label>剧情自由度</label>
-            <p style="margin:0;font-size:14px;color:var(--text-secondary);">${["", "严格遵循原著", "以原著为主", "适中发散", "自由发挥", "完全自由"][currentWorld.plot_freedom] || "适中发散"}</p>
+            <label>规则集</label>
+            <p style="margin:0;font-size:14px;color:var(--text-secondary);">${({"dnd":"D&D 奇幻","cthulhu":"克苏鲁恐怖","scifi":"科幻","modern":"现代","narrative":"纯叙事","ai":"AI 生成规则"})[currentWorld.ruleset_type] || currentWorld.ruleset_type}</p>
+        </div>` : ""}
+        ${currentWorld.world_freedom ? `
+        <div class="form-group">
+            <label>世界观自由度</label>
+            <p style="margin:0;font-size:14px;color:var(--text-secondary);">${["", "严格遵循源材料", "以源材料为锚", "适中", "自由发挥", "完全自由"][currentWorld.world_freedom] || "适中"}</p>
         </div>` : ""}
         ${currentWorld.custom_prefix ? `
         <div class="form-group">
@@ -1508,8 +1760,8 @@ function loadSave(saveId) {
     chatHistory = save.chatHistory ? deepClone(save.chatHistory) : rebuildChatFromHistory(save.history);
     chatSummary = (save.chatSummary && save.chatSummary.length) ? deepClone(save.chatSummary) : rebuildSummaryFromHistory(save.history);
 
-    // ★ CRPG: 兼容旧存档，补齐 combat_stats
-    if (!gameState.combat_stats) {
+    // ★ CRPG: 兼容旧存档，补齐 combat_stats（叙事模式不注入，保持纯叙事无数值）
+    if (!isNarrativeMode() && !gameState.combat_stats) {
         gameState.combat_stats = {
             max_hp: 12, hp: 12, max_mp: 4, mp: 4, ac: 12,
             level: 1, xp: 0, xp_to_next: 300,
@@ -1614,6 +1866,9 @@ function createOrUpdateSave() {
     saveSaves();
     // 使用已序列化的字符串保存 localStorage，避免 saveState 再次序列化
     saveState({ state: stateStr, history: historyStr, chatHistory: JSON.stringify(chatHistory) });
+    // D1 修正：behavior_records 存放在 currentWorld（worlds 数组内），必须随每轮同步落盘，
+    // 不能仅依赖 addBehaviorRecords 的 400ms 防抖——否则关标签瞬间会丢失关键事实。
+    saveWorlds();
 }
 
 /* ================= 角色状态面板 ================= */
@@ -1647,6 +1902,9 @@ function renderStatusTabs() {
         tabs.push({ key: "skills", label: schema.skill_label || "技能" });
     }
     tabs.push({ key: "goals", label: "目标" });
+    tabs.push({ key: "npc", label: "NPC" });
+    tabs.push({ key: "world", label: "世界动态" });
+    tabs.push({ key: "log", label: "抉择" });
 
     document.getElementById("statusTabs").innerHTML = tabs.map(t => `
         <button class="status-tab ${currentStatusTab === t.key ? "active" : ""}" onclick="switchStatusTab('${t.key}')">${t.label}</button>
@@ -1784,6 +2042,15 @@ function renderStatusPanel(tab) {
                     </div>
                 </div>
                 <div class="status-section">
+                    <div class="status-section-title">声望与张力</div>
+                    <div class="status-card">
+                        <div class="row"><span class="label">声望</span><span class="value">${reputationTitle(s.reputation || 0)} (${s.reputation || 0})</span></div>
+                        <div class="stat-bar"><div style="width:${Math.min(s.reputation || 0, 100)}%;background:var(--primary)"></div></div>
+                        <div class="row"><span class="label">张力</span><span class="value">${tensionTitle(s.tension || 0)} (${s.tension || 0})</span></div>
+                        <div class="stat-bar"><div style="width:${Math.min(s.tension || 0, 100)}%;background:var(--danger)"></div></div>
+                    </div>
+                </div>
+                <div class="status-section">
                     <div class="status-section-title">临时状态</div>
                     <div class="status-card">
                         ${(s.status_effects && s.status_effects.length) ? s.status_effects.map(e => `<div class="row"><span class="label">${e.name}</span><span class="value">${e.desc}</span></div>`).join("") : '<div class="empty-hint">无临时状态</div>'}
@@ -1847,10 +2114,69 @@ function renderStatusPanel(tab) {
                         if (g.status === "completed") cls = "completed";
                         else if (g.status === "failed") cls = "failed";
                         const deadline = g.deadline ? `截止：第${g.deadline.day}天 ${getPeriodLabel(g.deadline.period)}` : "无期限";
-                        return `<div class="goal-item ${cls}"><strong>${g.name}</strong><br><span style="font-size:11px;color:var(--text-muted)">${g.type} · ${deadline}</span></div>`;
+                        const prog = typeof g.progress === "number" ? g.progress : 0;
+                        const tier = g.tier ? ` · ${g.tier === "main" ? "主线" : g.tier === "side" ? "支线" : "个人"}` : "";
+                        return `<div class="goal-item ${cls}"><strong>${g.name}</strong><br><span style="font-size:11px;color:var(--text-muted)">${g.type}${tier} · ${deadline}</span>${prog > 0 ? `<div class="stat-bar" style="margin-top:4px;"><div style="width:${Math.min(prog,100)}%"></div></div>` : ""}</div>`;
                     }).join("") : '<div class="empty-hint">暂无目标</div>'}
                 </div>
             `;
+            break;
+
+        case "npc":
+            {
+                const npcEntries = Object.entries(s.npc_states || {});
+                container.innerHTML = `
+                    <div class="status-section">
+                        <div class="status-section-title">NPC 档案</div>
+                        ${npcEntries.length ? npcEntries.map(([name, ns]) => {
+                            const a = typeof ns.attitude === "number" ? ns.attitude : null;
+                            const pct = a !== null ? Math.max(0, Math.min(100, (a + 100) / 2)) : 50;
+                            const barColor = a !== null && a < 0 ? "var(--danger)" : "var(--primary)";
+                            return `<div class="status-card">
+                                <div class="row"><span class="label">${name}</span><span class="value">${a !== null ? tierLabel(attitudeTier(a)) + " (" + a + ")" : "—"}</span></div>
+                                ${a !== null ? `<div class="stat-bar"><div style="width:${pct}%;background:${barColor}"></div></div>` : ""}
+                                ${ns.mood ? `<div class="row"><span class="label">心情</span><span class="value">${ns.mood}</span></div>` : ""}
+                                ${ns.catchphrase ? `<div class="row"><span class="label">口头禅</span><span class="value">${ns.catchphrase}</span></div>` : ""}
+                                ${ns.speech_style ? `<div class="text-block" style="font-size:12px;color:var(--text-muted)">${ns.speech_style}</div>` : ""}
+                                ${ns.secrets && ns.secrets.length ? `<div class="text-block" style="font-size:12px;color:var(--text-muted)">隐秘：${ns.secrets.join("；")}</div>` : ""}
+                                ${ns.schedule && Object.keys(ns.schedule).length ? `<div class="text-block" style="font-size:12px;color:var(--text-muted)">日常：${Object.entries(ns.schedule).map(([p,l]) => p + "在" + l).join("，")}</div>` : ""}
+                            </div>`;
+                        }).join("") : '<div class="empty-hint">暂无 NPC 档案</div>'}
+                    </div>`;
+            }
+            break;
+
+        case "world":
+            {
+                const evs = (currentWorld && currentWorld.current_world_events) || [];
+                const leg = (currentWorld && currentWorld.inherited_legend) || null;
+                const legendBlock = leg ? `
+                    <div class="status-section">
+                        <div class="status-section-title">📜 继承的传说（前世余音）</div>
+                        <div class="status-card">
+                            <div class="row"><span class="label">前世旅人</span><span class="value">${leg.heroName || "无名旅人"}</span></div>
+                            <div class="row"><span class="label">来自世界</span><span class="value">${leg.worldName || "未知"}</span></div>
+                            <div class="text-block">${leg.summary || "（暂无记载）"}</div>
+                        </div>
+                    </div>` : "";
+                container.innerHTML = `
+                    ${legendBlock}
+                    <div class="status-section">
+                        <div class="status-section-title">世界近期动态（世界脉搏）</div>
+                        ${evs.length ? evs.slice().reverse().map(e => `<div class="status-card"><div class="row"><span class="label">[${e.type || "动态"}] 第${e.day}天</span></div><div class="text-block">${e.text}</div></div>`).join("") : '<div class="empty-hint">世界暂时风平浪静</div>'}
+                    </div>`;
+            }
+            break;
+
+        case "log":
+            {
+                const log = s.choice_log || [];
+                container.innerHTML = `
+                    <div class="status-section">
+                        <div class="status-section-title">抉择日志（你做出的每个选择）</div>
+                        ${log.length ? log.slice().reverse().map(c => `<div class="status-card"><div class="row"><span class="label">第${c.day}天</span></div><div class="text-block">${c.text}</div>${c.consequence ? `<div class="text-block" style="font-size:12px;color:var(--text-muted)">倾向：${c.consequence}</div>` : ""}</div>`).join("") : '<div class="empty-hint">你还没有做出选择</div>'}
+                    </div>`;
+            }
             break;
     }
 }

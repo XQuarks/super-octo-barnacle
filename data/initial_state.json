@@ -60,6 +60,10 @@
     }
   ],
   "status_effects": [],
+  "choice_log": [],
+  "reputation": 0,
+  "tension": 0,
+  "narrative_anchors": "",
   "is_alive": true,
   "death_reason": null
 }

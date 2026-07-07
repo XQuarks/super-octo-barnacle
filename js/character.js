@@ -218,6 +218,8 @@ window.CharacterCreator = (function() {
     getPrimaryAttr: getPrimaryAttr,
     getRaceName: getRaceName,
     getClassName: getClassName,
+    getRaces: function() { return _races; },
+    getClasses: function() { return _classes; },
     ATTR_NAMES: ATTR_NAMES,
     isLoaded: function() { return _loaded; }
   };

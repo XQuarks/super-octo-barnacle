@@ -15,7 +15,7 @@ let worlds = [];
 let saves = [];
 let currentStatusTab = "profile";
 let sourceFileContent = "";  // 用户上传的源文件内容
-let currentTheme = localStorage.getItem("aigame_theme") || "dark";
+let currentTheme = localStorage.getItem("octo_theme") || "dark";
 
 // 多轮对话配置
 const MAX_CHAT_MESSAGES = 40; // 保留 20 轮完整对话，完整历史前缀最大化缓存命中率
@@ -29,13 +29,14 @@ let lastCacheStats = { hitTokens: 0, missTokens: 0, totalTokens: 0, hitRate: "0%
 let debugLog = { sessionStart: new Date().toISOString(), worldCreations: [], turns: [] };
 
 const STORAGE_KEYS = {
-    config: "aigame_config",
-    state: "aigame_state",
-    history: "aigame_history",
-    chatHistory: "aigame_chathistory",
-    chatSummary: "aigame_chat_summary",
-    worlds: "aigame_worlds",
-    saves: "aigame_saves"
+    config: "octo_config",
+    state: "octo_state",
+    history: "octo_history",
+    chatHistory: "octo_chathistory",
+    chatSummary: "octo_chat_summary",
+    worlds: "octo_worlds",
+    saves: "octo_saves",
+    legends: "octo_legends"
 };
 
 const DEFAULT_PERIOD_ORDER = ["morning", "forenoon", "afternoon", "evening", "night"];
@@ -74,7 +75,7 @@ function getNextPeriod(period) {
 function toggleTheme() {
     currentTheme = currentTheme === "dark" ? "light" : "dark";
     applyTheme();
-    localStorage.setItem("aigame_theme", currentTheme);
+    localStorage.setItem("octo_theme", currentTheme);
     // 彩蛋：连续点击10次主题切换 → 自动填入世界和对话的特殊要求默认文字
     themeClickCount = (themeClickCount || 0) + 1;
     if (themeClickTimer) clearTimeout(themeClickTimer);
