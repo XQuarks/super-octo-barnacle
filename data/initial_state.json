@@ -1,0 +1,65 @@
+{
+  "name": "玩家",
+  "age": 16,
+  "background": "一个误入了陌生世界的普通人，对这里的规则一无所知。",
+  "personality": ["谨慎", "好奇"],
+  "attributes": {
+    "courage": "初来乍到，遇事不免有些畏缩，但还不到仓皇逃窜的地步。",
+    "perception": "对周遭动静还算留心，偶尔会注意到旁人忽略的细节。",
+    "patience": "能坐得住一时半刻，但若长久无望，也会焦躁起来。",
+    "luck": "不好不坏，像被世界随手一扔的普通石子。",
+    "will": "心志尚浅，却还没被现实完全磨平。"
+  },
+  "progression": {
+    "path": "未入门",
+    "rank": "凡人",
+    "progress": 0
+  },
+  "relationships": {
+    "guide_npc": "萍水相逢，对方看你的眼神里带着几分打量。",
+    "rival_npc": "你们彼此看不顺眼，言语间多有试探。",
+    "mentor_npc": "素未谋面，只在别人的故事里听过这个名字。"
+  },
+  "skills": {
+    "combat": "只会些粗浅把式，真动起手来十成要吃亏。",
+    "speech": "说话还算有条理，但远未到能打动人心的地步。",
+    "craft": "动手做过一些零活，离精工细作还差得远。",
+    "insight": "偶尔能灵光一闪，多数时候只是后知后觉。"
+  },
+  "inventory": [
+    {"item_id": "bread", "name": "干粮", "count": 2},
+    {"item_id": "coin", "name": "铜钱", "count": 10}
+  ],
+  "completed_events": [],
+  "current_location": "入口小镇",
+  "current_date": {
+    "day": 1,
+    "period": "morning"
+  },
+  "goals": [
+    {
+      "goal_id": "find_shelter",
+      "name": "找到落脚之处",
+      "type": "完成事件",
+      "deadline": {"day": 1, "period": "night"},
+      "visible": true
+    },
+    {
+      "goal_id": "meet_someone",
+      "name": "认识一位当地人",
+      "type": "关系变化",
+      "deadline": {"day": 3, "period": "night"},
+      "visible": true
+    },
+    {
+      "goal_id": "learn_rules",
+      "name": "了解世界的基本规则",
+      "type": "完成事件",
+      "deadline": {"day": 7, "period": "night"},
+      "visible": true
+    }
+  ],
+  "status_effects": [],
+  "is_alive": true,
+  "death_reason": null
+}

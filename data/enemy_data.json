@@ -1,0 +1,184 @@
+[
+  {
+    "name": "地精",
+    "level": 1,
+    "base_hp": 7,
+    "ac": 13,
+    "str": 8,
+    "dex": 14,
+    "con": 10,
+    "int": 10,
+    "wis": 8,
+    "cha": 8,
+    "xp": 40,
+    "attacks": [
+      { "name": "短剑挥砍", "hitBonus": 4, "damage": "1d6+2" }
+    ],
+    "loot": [{ "item_id": "coin", "name": "铜币", "count": 3 }],
+    "desc": "绿皮小个子，手持生锈短剑，叽叽喳喳地冲过来"
+  },
+  {
+    "name": "骷髅兵",
+    "level": 1,
+    "base_hp": 10,
+    "ac": 12,
+    "str": 12,
+    "dex": 10,
+    "con": 14,
+    "int": 6,
+    "wis": 8,
+    "cha": 5,
+    "xp": 50,
+    "attacks": [
+      { "name": "骨剑劈砍", "hitBonus": 4, "damage": "1d8+1" }
+    ],
+    "loot": [{ "item_id": "bone_dust", "name": "骨粉", "count": 1 }],
+    "desc": "一具会动的骷髅，空洞的眼眶里闪着幽蓝的光"
+  },
+  {
+    "name": "野狼",
+    "level": 1,
+    "base_hp": 9,
+    "ac": 12,
+    "str": 12,
+    "dex": 15,
+    "con": 12,
+    "int": 3,
+    "wis": 12,
+    "cha": 6,
+    "xp": 35,
+    "attacks": [
+      { "name": "利齿撕咬", "hitBonus": 5, "damage": "1d6+2" }
+    ],
+    "loot": [{ "item_id": "wolf_fang", "name": "狼牙", "count": 1 }],
+    "desc": "一头饥饿的灰狼，黄色的眼睛紧盯着你"
+  },
+  {
+    "name": "山贼",
+    "level": 2,
+    "base_hp": 14,
+    "ac": 13,
+    "str": 13,
+    "dex": 12,
+    "con": 12,
+    "int": 10,
+    "wis": 10,
+    "cha": 10,
+    "xp": 65,
+    "attacks": [
+      { "name": "斧头劈砍", "hitBonus": 4, "damage": "1d8+2" }
+    ],
+    "loot": [{ "item_id": "coin", "name": "银币", "count": 5 }],
+    "desc": "一个衣衫褴褛但体格健壮的山贼，手中的斧头闪着寒光"
+  },
+  {
+    "name": "暗影蜘蛛",
+    "level": 2,
+    "base_hp": 12,
+    "ac": 14,
+    "str": 10,
+    "dex": 16,
+    "con": 11,
+    "int": 4,
+    "wis": 10,
+    "cha": 4,
+    "xp": 55,
+    "attacks": [
+      { "name": "毒牙刺击", "hitBonus": 5, "damage": "1d6+1" }
+    ],
+    "loot": [{ "item_id": "spider_venom", "name": "蜘蛛毒液", "count": 1 }],
+    "desc": "一只比狗还大的黑色蜘蛛，从天花板上悄然落下"
+  },
+  {
+    "name": "骷髅射手",
+    "level": 2,
+    "base_hp": 10,
+    "ac": 13,
+    "str": 10,
+    "dex": 14,
+    "con": 10,
+    "int": 6,
+    "wis": 8,
+    "cha": 5,
+    "xp": 55,
+    "attacks": [
+      { "name": "骨箭射击", "hitBonus": 4, "damage": "1d8+1" }
+    ],
+    "loot": [{ "item_id": "arrow", "name": "骨箭", "count": 3 }],
+    "desc": "骷髅弓箭手站在远处，拉开一张骨头弓"
+  },
+  {
+    "name": "食人魔",
+    "level": 3,
+    "base_hp": 25,
+    "ac": 11,
+    "str": 18,
+    "dex": 8,
+    "con": 16,
+    "int": 5,
+    "wis": 7,
+    "cha": 7,
+    "xp": 120,
+    "attacks": [
+      { "name": "巨棒猛击", "hitBonus": 6, "damage": "2d6+4" }
+    ],
+    "loot": [{ "item_id": "coin", "name": "金币", "count": 10 }, { "item_id": "ogre_club", "name": "食人魔巨棒", "count": 1 }],
+    "desc": "一个两米多高的丑陋巨人，挥舞着一根粗大的木棒"
+  },
+  {
+    "name": "石像鬼",
+    "level": 3,
+    "base_hp": 18,
+    "ac": 15,
+    "str": 15,
+    "dex": 11,
+    "con": 14,
+    "int": 6,
+    "wis": 11,
+    "cha": 7,
+    "xp": 100,
+    "attacks": [
+      { "name": "爪击", "hitBonus": 5, "damage": "1d6+2" },
+      { "name": "啃咬", "hitBonus": 5, "damage": "1d4+2" }
+    ],
+    "loot": [{ "item_id": "gargoyle_wing", "name": "石像鬼之翼", "count": 1 }],
+    "desc": "一尊石雕突然活了过来，展开翅膀发出刺耳的尖啸"
+  },
+  {
+    "name": "亡灵法师",
+    "level": 3,
+    "base_hp": 15,
+    "ac": 12,
+    "str": 8,
+    "dex": 12,
+    "con": 12,
+    "int": 16,
+    "wis": 14,
+    "cha": 12,
+    "xp": 130,
+    "attacks": [
+      { "name": "暗影弹", "hitBonus": 5, "damage": "2d4+3" }
+    ],
+    "loot": [{ "item_id": "coin", "name": "金币", "count": 8 }, { "item_id": "dark_robe", "name": "暗影法袍", "count": 1 }],
+    "desc": "一个披着黑袍的枯槁身影，手中凝聚着一团暗紫色的能量"
+  },
+  {
+    "name": "龙裔战士",
+    "level": 4,
+    "base_hp": 28,
+    "ac": 16,
+    "str": 17,
+    "dex": 12,
+    "con": 15,
+    "int": 10,
+    "wis": 11,
+    "cha": 14,
+    "xp": 200,
+    "attacks": [
+      { "name": "火焰长剑", "hitBonus": 7, "damage": "1d8+4" },
+      { "name": "火焰吐息", "hitBonus": 6, "damage": "2d6" }
+    ],
+    "loot": [{ "item_id": "coin", "name": "金币", "count": 20 }, { "item_id": "dragon_scale", "name": "龙鳞", "count": 1 }],
+    "desc": "一个身披鳞甲的高大战士，龙目中燃烧着火焰"
+  }
+]

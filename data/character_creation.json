@@ -1,0 +1,76 @@
+{
+  "races": {
+    "human": {
+      "name": "人类",
+      "modifiers": { "all": 1 },
+      "desc": "适应力最强，各项属性均衡。获得一个额外专长。"
+    },
+    "elf": {
+      "name": "精灵",
+      "modifiers": { "dexterity": 2, "intelligence": 1, "charisma": 1 },
+      "desc": "敏捷优雅，天生亲和魔法与艺术。拥有黑暗视觉。"
+    },
+    "dwarf": {
+      "name": "矮人",
+      "modifiers": { "strength": 2, "constitution": 2, "charisma": -1 },
+      "desc": "矮壮结实，锻造与战斗的天才。对毒素有抗性。"
+    },
+    "half_elf": {
+      "name": "半精灵",
+      "modifiers": { "charisma": 2, "dexterity": 1 },
+      "desc": "兼具人类的适应力和精灵的优雅，善于交际。"
+    },
+    "dragonborn": {
+      "name": "龙裔",
+      "modifiers": { "strength": 2, "charisma": 1, "constitution": 1 },
+      "desc": "龙血后裔，力量与魅力并存。拥有喷吐武器。"
+    }
+  },
+  "classes": {
+    "fighter": {
+      "name": "战士",
+      "hp_base": 10,
+      "mp_base": 2,
+      "ac_base": 11,
+      "primary_attr": "strength",
+      "starting_skills": ["猛击", "盾牌格挡"],
+      "desc": "正面战斗的大师，攻守兼备。擅长所有护甲和武器。"
+    },
+    "mage": {
+      "name": "法师",
+      "hp_base": 6,
+      "mp_base": 10,
+      "ac_base": 10,
+      "primary_attr": "intelligence",
+      "starting_skills": ["魔法飞弹", "护盾术"],
+      "desc": "操控魔力的学者，法术华丽但身板脆弱。"
+    },
+    "rogue": {
+      "name": "游荡者",
+      "hp_base": 8,
+      "mp_base": 3,
+      "ac_base": 12,
+      "primary_attr": "dexterity",
+      "starting_skills": ["偷袭", "开锁"],
+      "desc": "灵巧机敏，暗中行动的行家。擅长偷袭与机关。"
+    },
+    "cleric": {
+      "name": "牧师",
+      "hp_base": 8,
+      "mp_base": 7,
+      "ac_base": 11,
+      "primary_attr": "wisdom",
+      "starting_skills": ["治愈术", "圣光驱邪"],
+      "desc": "神力加持的圣职者，擅长治疗与驱邪。"
+    },
+    "ranger": {
+      "name": "游侠",
+      "hp_base": 9,
+      "mp_base": 5,
+      "ac_base": 12,
+      "primary_attr": "dexterity",
+      "starting_skills": ["精准射击", "追踪"],
+      "desc": "荒野中的追踪者，箭无虚发，与自然共生。"
+    }
+  }
+}

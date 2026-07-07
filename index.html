@@ -1,0 +1,1703 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>以太叙事 · AetherNarrator</title>
+    <script src="https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mammoth@1.8.0/mammoth.browser.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+    <script src="js/dice.js"></script>
+    <script src="js/combat-stats.js"></script>
+    <script src="js/character.js"></script>
+    <script src="js/map-data.js"></script>
+    <script src="js/renderer/tile-map.js"></script>
+    <script src="js/action-menu.js"></script>
+    <script src="js/combat-engine.js"></script>
+    <script src="js/ui/character-creator.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap');
+
+        :root {
+            --bg: #1E1B16;
+            --bg-gradient: radial-gradient(ellipse at 50% 0%, #26221B 0%, #1E1B16 70%);
+            --bg-panel: #26221B;
+            --bg-sidebar: #221E18;
+            --card: rgba(217, 207, 192, 0.05);
+            --card-hover: rgba(217, 207, 192, 0.09);
+            --card-border: rgba(217, 207, 192, 0.12);
+            --card-border-hover: rgba(217, 207, 192, 0.20);
+            --text: #D9CFC0;
+            --text-secondary: rgba(217, 207, 192, 0.62);
+            --primary: #C9A87C;
+            --primary-light: #D8BC9A;
+            --accent: #C9A87C;
+            --success: #7BAA92;
+            --danger: #C56B5E;
+            --warning: #C9A455;
+            --text-muted: rgba(217, 207, 192, 0.42);
+            --separator: rgba(217, 207, 192, 0.08);
+            --radius-s: 6px;
+            --radius-m: 8px;
+            --radius-l: 12px;
+            --shadow-card: 0 2px 8px rgba(0,0,0,0.18);
+            --shadow-modal: 0 4px 16px rgba(0,0,0,0.28);
+            --shadow-gameover: 0 8px 32px rgba(0,0,0,0.38);
+            --overlay-bg: rgba(10,8,5,0.55);
+            --overlay-light: rgba(10,8,5,0.42);
+            --overlay-gameover: rgba(10,8,5,0.62);
+            --scrollbar-thumb: rgba(217,207,192,0.18);
+            --radio-inner: #221E18;
+            --btn-primary-text: #1A160F;
+            --text-tertiary: rgba(217, 207, 192, 0.30);
+            --card-bg: rgba(217, 207, 192, 0.06);
+            --log-entry-bg: var(--card);
+        }
+
+        /* 白天模式 — 仿电子书阅读器 */
+        [data-theme="light"] {
+            --bg: #F3EFE4;
+            --bg-gradient: linear-gradient(180deg, #F9F6EE 0%, #F3EFE4 100%);
+            --bg-panel: #FCF9F3;
+            --bg-sidebar: #F6F2E9;
+            --card: #FEFCF9;
+            --card-hover: #F8F4EA;
+            --card-border: #E2D9C8;
+            --card-border-hover: #C8BDA5;
+            --text: #383226;
+            --text-secondary: #8C8272;
+            --text-muted: #B0A895;
+            --text-tertiary: #C4BCAA;
+            --primary: #9E7D4E;
+            --primary-light: #B8955E;
+            --accent: #9E7D4E;
+            --success: #5A8A6E;
+            --danger: #A85A4A;
+            --warning: #9A7A38;
+            --separator: #E8E0D0;
+            --shadow-card: 0 1px 2px rgba(140,130,110,0.10);
+            --shadow-modal: 0 2px 16px rgba(140,130,110,0.15);
+            --shadow-gameover: 0 4px 28px rgba(140,130,110,0.20);
+            --overlay-bg: rgba(56,50,38,0.28);
+            --overlay-light: rgba(56,50,38,0.18);
+            --overlay-gameover: rgba(56,50,38,0.35);
+            --scrollbar-thumb: rgba(140,130,110,0.22);
+            --radio-inner: #FCF9F3;
+            --btn-primary-text: #FCF9F3;
+            --card-bg: #FEFCF9;
+            --log-entry-bg: #FEFCF8;
+        }
+        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+        :focus-visible {
+            outline: 2px solid var(--primary);
+            outline-offset: 2px;
+            border-radius: 2px;
+        }
+        button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+            outline: 2px solid var(--primary);
+            outline-offset: 1px;
+        }
+
+        .hidden { display: none !important; }
+        html, body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans SC", sans-serif;
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            height: 100dvh;
+            overflow: hidden;
+            background: var(--bg-gradient);
+            color: var(--text);
+            font-size: 14px;
+            line-height: 1.5;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+
+        /* 通用屏幕 - 带入场动画 */
+        .screen {
+            position: fixed;
+            inset: 0;
+            display: none;
+            flex-direction: column;
+            overflow: hidden;
+            animation: screenIn 0.4s ease-out;
+        }
+        .screen.active { display: flex; }
+        @keyframes screenIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        /* 顶部导航栏 */
+        .nav-header {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0 20px;
+            background: var(--bg-panel);
+            border-bottom: 1px solid var(--separator);
+            position: relative;
+            min-height: 52px;
+            flex: none;
+        }
+        .nav-header .back-btn {
+            position: absolute;
+            left: 12px;
+            background: none;
+            border: none;
+            color: var(--text);
+            font-size: 20px;
+            cursor: pointer;
+            padding: 8px;
+            transition: opacity 0.15s;
+        }
+        .nav-header .back-btn:hover { opacity: 0.6; }
+        .nav-header .title {
+            font-size: 13px;
+            font-weight: 500;
+            margin: 0;
+            letter-spacing: 0.06em;
+        }
+
+        /* 主界面 */
+        .home-screen {
+            justify-content: center;
+            align-items: center;
+            padding: 24px;
+            overflow-y: auto;
+        }
+        .home-content {
+            width: 100%;
+            max-width: 420px;
+            text-align: center;
+            position: relative;
+        }
+        .home-est {
+            font-size: 11px;
+            color: var(--text-muted);
+            letter-spacing: 0.2em;
+            font-weight: 400;
+            margin: 0 0 20px 0;
+        }
+        .home-title {
+            font-size: 38px;
+            font-weight: 300;
+            margin: 0 0 8px 0;
+            color: var(--text);
+            letter-spacing: 0.22em;
+        }
+        .home-subtitle-en {
+            font-size: 11px;
+            color: var(--text-muted);
+            margin: 0 0 40px 0;
+            letter-spacing: 0.35em;
+            font-weight: 300;
+        }
+        .home-subtitle {
+            font-size: 13px;
+            color: var(--text-secondary);
+            margin-bottom: 56px;
+            letter-spacing: 0.04em;
+        }
+        .menu-grid {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            width: 100%;
+            max-width: 380px;
+        }
+        .menu-card {
+            display: flex; flex-direction: column; align-items: center; gap: 4px;
+            padding: 28px 20px; border-radius: var(--radius-l); border: 2px solid var(--card-border);
+            background: var(--card-bg); cursor: pointer; transition: all 0.2s; color: var(--text);
+        }
+        .menu-card:hover { border-color: var(--text-tertiary); transform: translateY(-1px); box-shadow: 0 4px 16px rgba(0,0,0,0.15); }
+        .menu-card:active { transform: translateY(0); }
+        .primary-card { border-color: var(--primary); background: rgba(201,168,124,0.06); }
+        .primary-card:hover { border-color: var(--primary); background: rgba(201,168,124,0.10); }
+        .menu-card-icon { font-size: 32px; margin-bottom: 6px; }
+        .menu-card-label { font-size: 16px; font-weight: 500; letter-spacing: 0.04em; }
+        .menu-card-desc { font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+        .menu-row { display: flex; gap: 10px; }
+        .menu-mini {
+            flex: 1; padding: 10px 12px; border: 1px solid var(--card-border);
+            border-radius: var(--radius-m); background: var(--card-bg); color: var(--text-secondary);
+            font-size: 12px; cursor: pointer; transition: all 0.15s; text-align: center;
+        }
+        .menu-mini:hover { border-color: var(--text-tertiary); color: var(--text); }
+        .home-disclaimer {
+            margin-top: 28px;
+            font-size: 11px;
+            color: var(--text-tertiary);
+            line-height: 1.6;
+            text-align: center;
+        }
+
+        /* 列表屏幕 */
+        .create-world-bar {
+            margin: 12px 16px 0;
+            padding: 14px 18px;
+            border-radius: var(--radius-m);
+            background: rgba(201, 168, 124, 0.08);
+            border: 1px dashed rgba(201, 168, 124, 0.3);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            cursor: pointer;
+            transition: background 0.15s ease, border-color 0.15s ease;
+        }
+        .create-world-bar:hover {
+            background: rgba(201, 168, 124, 0.14);
+            border-color: rgba(201, 168, 124, 0.5);
+        }
+        .create-world-bar .create-icon {
+            font-size: 22px;
+            color: var(--primary-light);
+            line-height: 1;
+            font-weight: 300;
+        }
+        .create-world-bar .create-label {
+            font-size: 14px;
+            font-weight: 500;
+            color: var(--primary-light);
+        }
+        .create-world-bar .create-desc {
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-left: auto;
+        }
+        .list-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px;
+        }
+        .empty-state {
+            text-align: center;
+            padding: 64px 24px;
+            color: var(--text-muted);
+        }
+        .empty-state .text { font-size: 13px; line-height: 1.5; }
+        .world-card {
+            background: var(--card); border: 1px solid var(--card-border);
+            border-radius: var(--radius-l); padding: 16px 18px; margin-bottom: 10px;
+            cursor: pointer; transition: all 0.15s; position: relative;
+        }
+        .world-card:hover { border-color: var(--text-tertiary); background: var(--card-hover); }
+        .world-card.new-world { border-color: var(--primary); border-width: 1.5px; }
+        .wc-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+        .wc-name { font-size: 15px; font-weight: 500; color: var(--text); }
+        .wc-type { font-size: 10px; padding: 2px 8px; border-radius: 10px; }
+        .wc-type.type-ip { background: rgba(201,168,124,0.15); color: var(--primary); }
+        .wc-type.type-original { background: rgba(107,164,212,0.15); color: #6BA4D4; }
+        .wc-desc { font-size: 12px; color: var(--text-secondary); line-height: 1.5; }
+        .wc-tags { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+        .wc-actions { position: absolute; top: 12px; right: 14px; }
+        .wc-delete { font-size: 10px; padding: 3px 8px; border: 1px solid var(--card-border); border-radius: 10px; background: none; color: var(--text-tertiary); cursor: pointer; transition: all 0.15s; }
+        .wc-delete:hover { border-color: var(--danger); color: var(--danger); }
+        .list-item {
+            background: var(--card); border: 1px solid var(--card-border);
+            border-radius: var(--radius-m); padding: 14px 16px; margin-bottom: 8px;
+            cursor: pointer; transition: background 0.15s ease, border-color 0.15s ease;
+        }
+        .list-item:hover { background: var(--card-hover); border-color: var(--card-border-hover); }
+        .list-item .item-title { font-size: 15px; font-weight: 500; margin-bottom: 4px; color: var(--text); }
+        .list-item .item-meta { font-size: 12px; color: var(--text-secondary); line-height: 1.4; }
+        .list-item .item-tags { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+        .list-item.dead-save { border-color: rgba(226, 75, 74, 0.3); background: rgba(226, 75, 74, 0.05); }
+            background: var(--card);
+            border: 1px solid var(--card-border);
+            border-radius: var(--radius-m);
+            padding: 14px 16px;
+            margin-bottom: 8px;
+            cursor: pointer;
+            transition: background 0.15s ease, border-color 0.15s ease;
+        }
+        .list-item:hover { background: var(--card-hover); border-color: var(--card-border-hover); }
+        .list-item .item-title { font-size: 15px; font-weight: 500; margin-bottom: 4px; color: var(--text); }
+        .list-item .item-meta { font-size: 12px; color: var(--text-secondary); line-height: 1.4; }
+        .list-item .item-tags { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+        .list-item.dead-save { border-color: rgba(226, 75, 74, 0.3); background: rgba(226, 75, 74, 0.05); }
+        .save-item {
+            display: flex; align-items: center; justify-content: space-between; gap: 12px;
+        }
+        .save-info { flex: 1; min-width: 0; }
+        .save-actions { display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; }
+        .save-play-btn {
+            padding: 10px 20px; border-radius: var(--radius-m); border: none;
+            background: rgba(201, 168, 124, 0.15); color: var(--primary-light);
+            font-size: 14px; font-weight: 500; cursor: pointer; white-space: nowrap;
+            transition: background 0.15s;
+        }
+        .save-play-btn:hover { background: rgba(201, 168, 124, 0.25); }
+        .save-del-btn {
+            padding: 4px 0; border: none; background: transparent;
+            color: var(--danger); font-size: 11px; cursor: pointer; text-align: center;
+        }
+        .save-del-btn:hover { opacity: 0.7; }
+        .list-item.new-world { border-color: rgba(201, 168, 124, 0.25); }
+        .new-badge {
+            display: inline-block;
+            font-size: 10px; font-weight: 500;
+            color: #fff; background: #1D9E75;
+            padding: 1px 6px; border-radius: 3px;
+            margin-left: 6px; vertical-align: middle;
+        }
+        @keyframes fadeSlideIn {
+            from { opacity: 0; transform: translateY(12px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .dead-badge { font-size: 12px; color: #E24B4A; font-weight: 500; }
+        .world-list-item { position: relative; }
+        .delete-world-btn {
+            position: absolute;
+            top: 14px;
+            right: 16px;
+            font-size: 11px;
+            padding: 3px 10px;
+            border: 1px solid var(--danger);
+            color: var(--danger);
+            background: transparent;
+            border-radius: var(--radius-s);
+            cursor: pointer;
+            opacity: 0.6;
+            transition: opacity 0.15s, background 0.15s;
+        }
+        .delete-world-btn:hover {
+            opacity: 1;
+            background: var(--danger);
+            color: var(--btn-primary-text);
+        }
+        .tag {
+            font-size: 10px;
+            padding: 3px 8px;
+            border-radius: var(--radius-s);
+            background: var(--card);
+            color: var(--text-secondary);
+            letter-spacing: 0.04em;
+        }
+        .tag.primary { background: rgba(201, 168, 124, 0.12); color: var(--primary); }
+        .tag.accent { background: rgba(201, 168, 124, 0.08); color: var(--primary-light); }
+
+        /* 弹窗 */
+        .modal-overlay {
+            position: fixed;
+            inset: 0;
+            background: var(--overlay-bg);
+            display: none;
+            justify-content: center;
+            align-items: flex-end;
+            z-index: 1000;
+            opacity: 0;
+            transition: opacity 0.25s ease;
+        }
+        .modal-overlay.show {
+            display: flex;
+            opacity: 1;
+        }
+        .modal {
+            background: var(--bg-panel);
+            border-radius: var(--radius-l) var(--radius-l) 0 0;
+            width: 100%;
+            max-width: 520px;
+            max-height: 90vh;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            transform: translateY(100%);
+            transition: transform 0.3s ease;
+            border-top: 1px solid var(--card-border);
+        }
+        .modal-overlay.show .modal { transform: translateY(0); }
+        .modal-header {
+            padding: 20px 20px 16px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            border-bottom: 1px solid var(--separator);
+        }
+        .modal-header h2 { margin: 0; font-size: 13px; font-weight: 500; color: var(--text); letter-spacing: 0.06em; }
+        .modal-close {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            font-size: 18px;
+            cursor: pointer;
+            padding: 4px 8px;
+            transition: color 0.15s;
+        }
+        .modal-close:hover { color: var(--text); }
+        .modal-body {
+            padding: 20px;
+            overflow-y: auto;
+            flex: 1;
+        }
+        .modal-footer {
+            padding: 12px 20px 20px;
+            display: flex;
+            gap: 8px;
+            border-top: 1px solid var(--separator);
+        }
+
+        /* 表单 */
+        .form-group { margin-bottom: 16px; }
+        .form-group label {
+            display: block;
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-bottom: 8px;
+            font-weight: 500;
+            letter-spacing: 0.06em;
+        }
+        .form-group input,
+        .form-group textarea,
+        .form-group select {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid var(--card-border);
+            border-radius: var(--radius-s);
+            font-size: 14px;
+            background: var(--card);
+            color: var(--text);
+            transition: border-color 0.2s, background 0.2s;
+            font-family: inherit;
+        }
+        .form-group input::placeholder,
+        .form-group textarea::placeholder { color: var(--text-muted); }        .form-group input:focus,
+        .form-group textarea:focus,
+        .form-group select:focus { border-color: var(--primary); background: var(--card-hover); }
+        .form-group textarea { min-height: 120px; resize: vertical; }
+        .form-group .hint {
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-top: 6px;
+            line-height: 1.4;
+        }
+        .form-group input[type="file"] {
+            display: none;
+        }
+        .file-upload-area {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            padding: 16px;
+            border: 1px dashed var(--card-border);
+            border-radius: var(--radius-s);
+            cursor: pointer;
+            transition: border-color 0.2s, background 0.2s;
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 12px;
+            min-height: 48px;
+        }
+        .file-upload-area:hover { border-color: var(--primary); background: var(--card-hover); }
+        .file-upload-area.has-file { border-color: var(--primary); border-style: solid; background: rgba(201, 168, 124, 0.06); }
+        .file-upload-area .file-name { color: var(--primary); font-weight: 500; word-break: break-all; }
+        .file-upload-area .file-remove {
+            color: var(--danger);
+            cursor: pointer;
+            font-size: 16px;
+            padding: 2px 6px;
+            border-radius: 2px;
+        }
+        .file-upload-area .file-remove:hover { background: rgba(208, 72, 72, 0.12); }
+        .form-group .upload-hint { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+        .upload-tip-box {
+            background: rgba(201, 168, 124, 0.08);
+            border: 1px solid rgba(201, 168, 124, 0.20);
+            border-radius: var(--radius-m);
+            padding: 12px 14px;
+            margin-bottom: 8px;
+        }
+        .upload-tip-title {
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--primary);
+            margin-bottom: 4px;
+        }
+        .upload-tip-desc {
+            font-size: 12px;
+            line-height: 1.5;
+            color: var(--text-secondary);
+        }
+
+        /* 单选组 */
+        .radio-group {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .radio-option {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            padding: 12px 14px;
+            border: 1px solid var(--card-border);
+            border-radius: var(--radius-m);
+            cursor: pointer;
+            transition: border-color 0.15s, background 0.15s;
+            background: var(--card);
+            position: relative;
+        }
+        .radio-option:hover { background: var(--card-hover); border-color: var(--card-border-hover); }
+        .radio-option.selected {
+            border-color: var(--primary);
+            background: rgba(201, 168, 124, 0.06);
+        }
+        .radio-option.selected::before {
+            content: "";
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 3px;
+            background: var(--primary);
+            border-radius: var(--radius-m) 0 0 var(--radius-m);
+        }
+        .radio-option input[type="radio"] {
+            display: none;
+        }
+        .radio-option .radio-indicator {
+            width: 16px;
+            height: 16px;
+            border-radius: var(--radius-s);
+            border: 1.5px solid var(--card-border-hover);
+            flex-shrink: 0;
+            margin-top: 1px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: border-color 0.15s, background 0.15s;
+        }
+        .radio-option.selected .radio-indicator {
+            border-color: var(--primary);
+            background: var(--primary);
+        }
+        .radio-option.selected .radio-indicator::after {
+            content: "";
+            width: 6px;
+            height: 6px;
+            background: var(--radio-inner);
+            border-radius: 2px;
+        }
+        .radio-option .radio-label { font-size: 13px; color: var(--text); font-weight: 500; }
+        .radio-option .radio-desc { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+
+        /* 条件区域 */
+        .conditional-field {
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s ease, margin-top 0.3s ease;
+            margin-top: 0;
+        }
+        .conditional-field.show {
+            max-height: 300px;
+            margin-top: 8px;
+        }
+
+        /* 范围滑块 */
+        .range-slider-wrapper {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .font-size-controls { display: flex; gap: 8px; }
+        .font-size-btn {
+            flex: 1; padding: 12px; border-radius: var(--radius-m);
+            border: 1px solid var(--card-border); background: var(--card);
+            color: var(--text-secondary); font-size: 14px; cursor: pointer;
+            text-align: center; transition: all 0.15s;
+        }
+        .font-size-btn:hover { border-color: var(--card-border-hover); background: var(--card-hover); }
+        .font-size-btn.active { color: var(--text); border-color: var(--primary); background: rgba(201,168,124,0.12); }
+        .range-slider-wrapper input[type="range"] {
+            -webkit-appearance: none;
+            width: 100%;
+            height: 4px;
+            border-radius: 2px;
+            background: var(--card-border);
+            padding: 0;
+            margin: 0;
+        }
+        .range-slider-wrapper input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: var(--text);
+            cursor: pointer;
+            border: none;
+        }
+        .range-labels {
+            display: flex;
+            justify-content: space-between;
+            font-size: 10px;
+            color: var(--text-muted);
+        }
+        .range-current {
+            text-align: center;
+            font-size: 12px;
+            color: var(--text-secondary);
+            font-weight: 400;
+        }
+
+        /* 按钮 */
+        .btn {
+            flex: 1;
+            padding: 10px 16px;
+            border: none;
+            border-radius: var(--radius-s);
+            font-size: 12px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            text-align: center;
+            letter-spacing: 0.04em;
+        }
+        .btn:active { opacity: 0.7; }
+        .btn.primary {
+            background: var(--primary);
+            color: var(--btn-primary-text);
+        }
+        .btn.primary:hover { opacity: 0.85; }
+        .btn.secondary {
+            background: transparent;
+            color: var(--text-secondary);
+            border: 1px solid var(--card-border);
+        }
+        .btn.secondary:hover { border-color: var(--card-border-hover); color: var(--text); }
+        .btn.danger { background: transparent; color: var(--danger); border: 1px solid rgba(208, 72, 72, 0.2); }
+        .btn.full-width { width: 100%; flex: none; }
+        .btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+        /* Toast */
+        .toast {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%) scale(0.95);
+            background: var(--bg-panel);
+            color: var(--text);
+            padding: 12px 24px;
+            border-radius: var(--radius-m);
+            font-size: 13px;
+            z-index: 2000;
+            opacity: 0;
+            pointer-events: none;
+            transition: all 0.2s ease;
+            text-align: center;
+            border: 1px solid var(--card-border);
+            box-shadow: var(--shadow-modal);
+        }
+        .toast.show { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+        .toast.success { border-color: var(--success); }
+        .toast.error { border-color: var(--danger); }
+
+        /* 游戏界面 */
+        .game-screen { background: var(--bg); color: var(--text); }
+        .game-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 20px;
+            background: var(--bg-panel);
+            border-bottom: 1px solid var(--separator);
+            flex: none;
+            height: 56px;
+        }
+        .game-header .world-name { font-size: 14px; font-weight: 500; color: var(--text); letter-spacing: 0.04em; }
+        .game-header .day-info { font-size: 12px; color: var(--text-muted); }
+        .cache-indicator { font-size: 10px; color: var(--text-tertiary); margin-left: 8px; padding: 2px 6px; border-radius: 4px;
+            background: var(--card-bg); border: 1px solid var(--card-border); cursor: default; }
+        .cache-indicator.good { color: #1D9E75; border-color: #5DCAA5; }
+        .cache-indicator.warn { color: #BA7517; border-color: #EF9F27; }
+        .cache-indicator.bad { color: #E24B4A; border-color: #F09595; }
+        .game-body {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            position: relative;
+        }
+        /* === 上方可视化交互区 === */
+        .game-top-panel {
+            flex: 0 0 42%;
+            min-height: 120px;
+            max-height: 60%;
+            position: relative;
+            overflow: auto;
+            background: #151310;
+            border-bottom: 1px solid var(--separator);
+        }
+        .game-top-panel > * { height: 100%; }
+        .top-panel-placeholder {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: var(--text-tertiary);
+            gap: 8px;
+        }
+        .placeholder-icon { font-size: 32px; opacity: 0.4; }
+        .placeholder-text { font-size: 13px; opacity: 0.5; }
+
+        /* === 拖拽分隔线 === */
+        .panel-divider {
+            flex: none;
+            height: 8px;
+            background: var(--bg-sidebar);
+            border-top: 1px solid var(--separator);
+            border-bottom: 1px solid var(--separator);
+            cursor: row-resize;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.15s;
+            z-index: 5;
+        }
+        .panel-divider:hover { background: var(--bg-panel); }
+        .divider-handle {
+            width: 40px;
+            height: 3px;
+            border-radius: 2px;
+            background: var(--text-tertiary);
+            opacity: 0.6;
+        }
+        .panel-divider:hover .divider-handle { opacity: 1; }
+
+        /* === 下方剧情滑动区 === */
+        .game-bottom-panel {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            min-height: 200px;
+        }
+        .game-log {
+            flex: 1;
+            overflow-y: auto;
+            -webkit-overflow-scrolling: touch;
+            overscroll-behavior-y: contain;
+            padding: 14px 20px;
+            background: transparent;
+        }
+        .log-entry {
+            background: var(--log-entry-bg);
+            border: 1px solid var(--card-border);
+            border-radius: var(--radius-m);
+            padding: 16px 18px;
+            margin-bottom: 12px;
+            box-shadow: var(--shadow-card);
+        }
+        .log-entry .meta {
+            font-size: 11px;
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+            display: flex;
+            justify-content: space-between;
+            letter-spacing: 0.04em;
+        }
+        .log-entry .player-text {
+            color: var(--primary);
+            font-weight: 500;
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+        .log-entry .narrative {
+            line-height: 1.85;
+            font-size: 14.5px;
+            letter-spacing: 0.01em;
+            color: var(--text);
+        }
+        .log-entry .narrative .item-highlight {
+            color: var(--primary);
+            font-weight: 500;
+            background: rgba(201, 168, 124, 0.10);
+            padding: 1px 4px;
+            border-radius: var(--radius-s);
+        }
+        /* 打字机光标 */
+        .log-entry .narrative.typing::after {
+            content: "▋";
+            display: inline;
+            color: var(--primary);
+            margin-left: 1px;
+            animation: typewriter-blink 0.9s steps(2, start) infinite;
+            font-weight: 400;
+        }
+        @keyframes typewriter-blink {
+            50% { opacity: 0; }
+        }
+        .game-log.typing-active { cursor: pointer; }
+        .game-log.typing-active .log-entry:last-child .narrative.typing { border-radius: var(--radius-s); }
+        /* 非故事内容警告样式 */
+        .log-entry.warning {
+            border-left: 3px solid var(--danger);
+            background: rgba(197, 107, 94, 0.07);
+            box-shadow: none;
+        }
+        .log-entry.warning .meta {
+            color: var(--danger);
+            opacity: 0.65;
+        }
+        .log-entry.warning .narrative {
+            color: var(--danger);
+            opacity: 0.75;
+            font-style: italic;
+        }
+        .game-input-area {
+            padding: 10px 16px 20px;
+            background: var(--bg-panel);
+            border-top: 1px solid var(--separator);
+            flex: none;
+        }
+        .choices-row {
+            display: flex;
+            gap: 6px;
+            overflow-x: auto;
+            padding-bottom: 8px;
+            margin-bottom: 8px;
+            scrollbar-width: none;
+        }
+        .choices-row::-webkit-scrollbar { display: none; }
+        .loading-indicator {
+            display: none; align-items: center; gap: 8px; padding: 6px 0;
+            font-size: 12px; color: var(--text-muted); margin-bottom: 4px;
+        }
+        .loading-indicator.show { display: flex; }
+        .loading-dot {
+            width: 8px; height: 8px; border-radius: 50%; background: var(--text-secondary);
+            animation: pulse-dot 1.2s ease-in-out infinite;
+        }
+        @keyframes pulse-dot {
+            0%, 100% { opacity: 0.25; transform: scale(0.8); }
+            50% { opacity: 1; transform: scale(1.2); }
+        }
+        .loading-text { flex: 1; }
+        .loading-time { color: var(--text-tertiary); font-size: 11px; }
+        .choice-chip {
+            white-space: nowrap;
+            padding: 10px 16px;
+            min-height: 44px;
+            border-radius: var(--radius-m);
+            border: 1px solid var(--card-border);
+            background: var(--card);
+            color: var(--text-secondary);
+            font-size: 13px;
+            cursor: pointer;
+            transition: all 0.15s;
+            animation: choiceIn 0.35s ease-out both;
+        }
+        .choice-chip:nth-child(1) { animation-delay: 0s; }
+        .choice-chip:nth-child(2) { animation-delay: 0.08s; }
+        .choice-chip:nth-child(3) { animation-delay: 0.16s; }
+        .choice-chip:nth-child(4) { animation-delay: 0.24s; }
+        @keyframes choiceIn {
+            from { opacity: 0; transform: translateX(-16px); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+        .choice-chip:hover { color: var(--text); border-color: var(--card-border-hover); background: var(--card-hover); }
+        .choice-chip:active { color: var(--primary); border-color: var(--primary); }
+        .choices-row.in-log {
+            padding: 0 0 16px 0;
+            margin-top: 4px;
+            flex-wrap: wrap;
+        }
+        .input-row {
+            display: flex;
+            gap: 6px;
+        }
+        .input-row input {
+            flex: 1;
+            padding: 8px 12px;
+            border: 1px solid var(--card-border);
+            border-radius: var(--radius-s);
+            font-size: 14px;
+            background: var(--card);
+            color: var(--text);
+            font-family: inherit;
+        }
+        .input-row input:focus { border-color: var(--primary); }
+        .input-row input::placeholder { color: var(--text-muted); }
+        .input-row .send-btn {
+            background: var(--primary);
+            color: var(--btn-primary-text);
+            border: none;
+            border-radius: var(--radius-m);
+            padding: 0 20px;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: opacity 0.15s;
+            letter-spacing: 0.04em;
+        }
+        .input-row .send-btn:hover { opacity: 0.85; }
+        .game-header .header-actions { display: flex; gap: 6px; }
+        .game-header .header-actions button {
+            padding: 6px 14px;
+            border: 1px solid var(--card-border);
+            background: transparent;
+            color: var(--text-secondary);
+            border-radius: var(--radius-s);
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.15s;
+            letter-spacing: 0.04em;
+            min-height: 36px;
+        }
+        .game-header .header-actions button:hover { color: var(--text); border-color: var(--card-border-hover); background: var(--card-hover); }
+
+        .death-banner {
+            display: flex; align-items: center; gap: 8px;
+            padding: 8px 16px;
+            margin: 0 0 0 0;
+            background: rgba(226, 75, 74, 0.12);
+            border-bottom: 1px solid rgba(226, 75, 74, 0.3);
+            font-size: 13px; color: #E24B4A;
+        }
+        .death-banner-icon { font-size: 16px; }
+        .death-banner-text { flex: 1; }
+
+        /* 角色状态面板 */
+        .status-panel-overlay {
+            position: fixed;
+            inset: 0;
+            background: var(--overlay-light);
+            display: none;
+            justify-content: flex-end;
+            z-index: 500;
+            opacity: 0;
+            transition: opacity 0.25s ease;
+        }
+        .status-panel-overlay.show { display: flex; opacity: 1; }
+        .status-panel {
+            width: 100%;
+            max-width: 380px;
+            height: 100%;
+            background: var(--bg-panel);
+            display: flex;
+            flex-direction: column;
+            transform: translateX(100%);
+            transition: transform 0.25s ease;
+            border-left: 1px solid var(--card-border);
+        }
+        .status-panel-overlay.show .status-panel { transform: translateX(0); }
+        .status-panel-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 16px;
+            background: var(--bg-panel);
+            border-bottom: 1px solid var(--separator);
+            flex: none;
+            height: 44px;
+        }
+        .status-panel-header h2 { margin: 0; font-size: 11px; color: var(--text-muted); font-weight: 500; letter-spacing: 0.1em; }
+        .status-panel-header .close-btn {
+            background: none;
+            border: none;
+            font-size: 18px;
+            color: var(--text-muted);
+            cursor: pointer;
+            padding: 4px;
+            transition: color 0.15s;
+        }
+        .status-panel-header .close-btn:hover { color: var(--text); }
+        .status-tabs {
+            display: flex;
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+            overscroll-behavior-x: contain;
+            background: transparent;
+            border-bottom: 1px solid var(--separator);
+            scrollbar-width: none;
+            flex: none;
+        }
+        .status-tabs::-webkit-scrollbar { display: none; }
+        .status-tab {
+            flex: 1;
+            min-width: 56px;
+            padding: 10px 6px;
+            text-align: center;
+            font-size: 11px;
+            color: var(--text-muted);
+            border: none;
+            background: none;
+            cursor: pointer;
+            border-bottom: 1px solid transparent;
+            white-space: nowrap;
+            transition: color 0.15s, border-color 0.15s;
+            letter-spacing: 0.04em;
+        }
+        .status-tab.active {
+            color: var(--text);
+            border-bottom-color: var(--text);
+        }
+        .status-content {
+            flex: 1;
+            overflow-y: auto;
+            -webkit-overflow-scrolling: touch;
+            overscroll-behavior-y: contain;
+            padding: 16px;
+            background: transparent;
+        }
+        .status-section { margin-bottom: 24px; }
+        .status-section-title {
+            font-size: 10px;
+            font-weight: 500;
+            color: var(--text-muted);
+            margin-bottom: 10px;
+            letter-spacing: 0.1em;
+        }
+        .status-card {
+            background: var(--card);
+            border: 1px solid var(--card-border);
+            border-radius: var(--radius-m);
+            padding: 12px 14px;
+            margin-bottom: 8px;
+        }
+        .status-card .row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 6px 0;
+            border-bottom: 1px solid var(--separator);
+            font-size: 13px;
+        }
+        .status-card .row:last-child { border-bottom: none; }
+        .status-card .row .label { color: var(--text-secondary); font-size: 12px; }
+        .status-card .row .value { color: var(--text); font-weight: 400; font-size: 13px; }
+        .status-card .stat-bar { height: 4px; background: var(--card-border); border-radius: 2px; margin-top: 4px; overflow: hidden; }
+        .status-card .stat-bar > div { height: 100%; background: var(--primary); border-radius: 2px; transition: width 0.3s ease; }
+        .status-card .text-block {
+            font-size: 13px;
+            line-height: 1.7;
+            color: var(--text);
+        }
+        .status-tag-list { display: flex; flex-wrap: wrap; gap: 4px; }
+        .status-tag {
+            font-size: 11px;
+            padding: 4px 8px;
+            border-radius: var(--radius-s);
+            background: var(--card);
+            border: 1px solid var(--card-border);
+            color: var(--text-secondary);
+        }
+        .goal-item {
+            font-size: 13px;
+            padding: 10px 14px;
+            border-radius: var(--radius-m);
+            margin-bottom: 6px;
+            background: var(--card);
+            border: 1px solid var(--card-border);
+            border-left: 3px solid var(--primary);
+        }
+        .goal-item.completed { border-left-color: var(--success); }
+        .goal-item.failed { border-left-color: var(--danger); }
+        .empty-hint { text-align: center; color: var(--text-muted); padding: 24px; font-size: 12px; }
+
+        /* 游戏结束弹窗 */
+        .game-over-overlay {
+            position: fixed;
+            inset: 0;
+            background: var(--overlay-gameover);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 3000;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+            padding: 24px;
+        }
+        .game-over-overlay.show { display: flex; opacity: 1; }
+        .game-over-box {
+            background: var(--bg-panel);
+            border-radius: var(--radius-l);
+            padding: 32px 24px;
+            max-width: 340px;
+            width: 100%;
+            text-align: center;
+            border: 1px solid var(--card-border);
+            box-shadow: var(--shadow-gameover);
+        }
+        .game-over-box h2 { margin: 0 0 8px 0; font-size: 20px; font-weight: 300; letter-spacing: 0.08em; }
+        .game-over-box .reason {
+            font-size: 13px;
+            color: var(--text-secondary);
+            line-height: 1.6;
+            margin-bottom: 24px;
+        }
+
+        ::-webkit-scrollbar { width: 4px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 2px; }
+        .game-log::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); }
+
+        /* 角色创建弹窗 */
+        .cc-modal { max-width: 520px; max-height: 85vh; display: flex; flex-direction: column; }
+        .cc-steps { display: flex; align-items: center; padding: 10px 20px 14px; gap: 0; }
+        .cc-dot { flex: 1; text-align: center; font-size: 11px; color: var(--text-tertiary); position: relative; padding-top: 16px; }
+        .cc-dot::before { content: ''; position: absolute; top: 0; left: 50%; transform: translateX(-50%); width: 8px; height: 8px; border-radius: 50%; background: var(--card-border); }
+        .cc-dot.active { color: var(--text); font-weight: 500; }
+        .cc-dot.active::before { background: var(--primary); }
+        .cc-dot.done { color: var(--text-secondary); }
+        .cc-dot.done::before { background: var(--primary); opacity: 0.5; }
+        .cc-body { flex: 1; overflow-y: auto; padding: 8px 20px 0; min-height: 200px; }
+        .cc-nav { display: flex; gap: 10px; padding: 14px 20px; justify-content: flex-end; }
+        .cc-btn { padding: 8px 20px; border-radius: var(--radius-m); font-size: 13px; cursor: pointer; border: 1px solid var(--card-border); transition: all 0.15s; }
+        .cc-btn-primary { background: var(--primary); color: #fff; border-color: var(--primary); }
+        .cc-btn-primary:hover { opacity: 0.9; }
+        .cc-btn-secondary { background: var(--card); color: var(--text); }
+        .cc-btn-secondary:hover { background: var(--card-hover); }
+        .cc-option-list { display: flex; flex-direction: column; gap: 8px; }
+        .cc-option { padding: 12px 14px; border: 2px solid var(--card-border); border-radius: var(--radius-m); cursor: pointer; transition: all 0.15s; }
+        .cc-option:hover { border-color: var(--text-tertiary); }
+        .cc-option.selected { border-color: var(--primary); background: rgba(201,168,124,0.08); }
+        .cc-option-name { font-size: 15px; font-weight: 500; margin-bottom: 4px; }
+        .cc-option-desc { font-size: 12px; color: var(--text-secondary); line-height: 1.5; margin-bottom: 4px; }
+        .cc-option-mods { font-size: 11px; color: var(--text-tertiary); }
+        .cc-loading { text-align: center; color: var(--text-tertiary); padding: 40px 0; }
+        .cc-attr-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+        .cc-attr-cell { padding: 12px 10px; background: var(--card-bg); border: 1px solid var(--card-border); border-radius: var(--radius-s); text-align: center; }
+        .cc-attr-label { font-size: 11px; color: var(--text-tertiary); margin-bottom: 2px; }
+        .cc-attr-value { font-size: 22px; font-weight: 600; color: var(--text); }
+        .cc-attr-mod { font-size: 12px; font-weight: 400; color: var(--text-secondary); }
+        .cc-attr-bonus { font-size: 10px; color: var(--primary); margin-top: 2px; }
+        .cc-attr-base { font-size: 10px; color: var(--text-tertiary); margin-top: 1px; }
+        .cc-attr-actions { text-align: center; margin-top: 12px; }
+        .cc-summary { max-width: 360px; margin: 0 auto; }
+        .cc-summary-row { display: flex; justify-content: space-between; padding: 6px 0; font-size: 13px; }
+        .cc-sum-label { color: var(--text-secondary); }
+        .cc-summary-sep { height: 1px; background: var(--card-border); margin: 6px 0; }
+
+        /* 主题切换按钮 */
+        .theme-toggle-btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 36px;
+            height: 36px;
+            border: 1px solid var(--card-border);
+            border-radius: var(--radius-s);
+            background: var(--card);
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .theme-toggle-btn:hover { border-color: var(--card-border-hover); background: var(--card-hover); color: var(--text); }
+
+        /* 主题图标显示控制：夜间模式显示太阳(切换到白天)，白天模式显示月亮(切换到夜间) */
+        .theme-icon-moon { display: none; }
+        .theme-icon-sun { display: block; }
+        [data-theme="light"] .theme-icon-moon { display: block; }
+        [data-theme="light"] .theme-icon-sun { display: none; }
+
+        /* ================= 移动端适配 ================= */
+        @media (max-width: 480px) {
+            .home-title { font-size: 28px; letter-spacing: 0.18em; }
+            .home-subtitle-en { font-size: 9px; letter-spacing: 0.3em; margin-bottom: 28px; }
+            .home-subtitle { font-size: 13px; margin-bottom: 36px; }
+            .game-top-panel { flex: 0 0 35%; min-height: 100px; }
+            .game-bottom-panel { min-height: 180px; }
+            .game-log { padding: 8px 12px; }
+            .game-input-area { padding: 6px 10px 14px; }
+            .log-entry { padding: 12px 14px; }
+            .status-content { padding: 12px; }
+            .status-panel { max-width: 100%; }
+            .tile-map { padding: 2px; }
+            .tile-map-grid { gap: 0; }
+        }
+        /* CRPG: 动作菜单 */
+        .action-menu { display: flex; gap: 6px; padding: 0 0 8px 0; flex-wrap: wrap; }
+        .action-btn {
+            padding: 6px 10px; border-radius: var(--radius-s);
+            border: 1px solid var(--card-border); background: var(--card);
+            color: var(--text-secondary); font-size: 12px; cursor: pointer;
+            transition: all 0.15s; white-space: nowrap;
+        }
+        .action-btn:hover { background: var(--card-hover); border-color: var(--primary); color: var(--text); }
+        .action-btn.combat-only { border-color: rgba(197, 107, 94, 0.3); }
+        .action-btn:active { transform: scale(0.96); }
+
+        /* CRPG: 瓦片地图（现在填满顶部面板） */
+        #mapContainer { width: 100%; height: 100%; display: none; overflow: auto; }
+        #mapContainer.show { display: flex; align-items: center; justify-content: center; }
+        .tile-map { padding: 4px; background: #1a1814; display: flex; flex-direction: column; align-items: center; max-width: 100%; }
+        .tile-map-grid { display: grid; gap: 1px; }
+        .tile-cell-wrapper { position: relative; }
+        .tile-cell { border-radius: 1px; position: relative; display: flex; align-items: center; justify-content: center; }
+        .tile-symbol { font-size: 14px; font-weight: bold; pointer-events: none; }
+        .entity-label { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 16px; font-weight: bold; pointer-events: none; text-shadow: 0 0 3px #000; }
+        @keyframes playerPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
+        .tile-map-legend { display: flex; gap: 10px; flex-wrap: wrap; padding: 8px 0 0; font-size: 10px; color: var(--text-muted); }
+        .tile-map-legend span { display: flex; align-items: center; gap: 4px; }
+        .tile-map-legend .legend-swatch { width: 12px; height: 12px; border-radius: 2px; }
+        .tile-map-desc { font-size: 12px; color: var(--text-secondary); margin: 8px 0 0; text-align: center; line-height: 1.5; }
+
+        /* CRPG: 战斗面板（填满顶部区域） */
+        #combatPanel { width: 100%; height: 100%; background: rgba(197, 107, 94, 0.06); padding: 8px 14px; display: none; flex-direction: column; overflow-y: auto; }
+        #combatPanel.show { display: flex; }
+        .combat-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+        .combat-header .combat-title { font-size: 13px; font-weight: 500; color: var(--danger); }
+        .combat-header .combat-round { font-size: 11px; color: var(--text-muted); }
+        .enemy-list { display: flex; flex-direction: column; gap: 6px; }
+        .enemy-card { display: flex; align-items: center; gap: 10px; padding: 8px 10px; background: var(--card-bg); border: 1px solid var(--card-border); border-radius: var(--radius-s); }
+        .enemy-card.dead { opacity: 0.45; }
+        .enemy-card .enemy-name { font-size: 13px; font-weight: 500; min-width: 70px; color: var(--text); }
+        .enemy-card .enemy-name.dead-text { text-decoration: line-through; color: var(--text-muted); }
+        .enemy-info { flex: 1; }
+        .enemy-card .enemy-hp-text { font-size: 11px; color: var(--text-secondary); margin-bottom: 3px; }
+        .enemy-card .enemy-hp-bar { height: 6px; background: var(--card-border); border-radius: 3px; overflow: hidden; }
+        .enemy-card .enemy-hp-bar > div { height: 100%; background: var(--danger); border-radius: 3px; transition: width 0.3s ease; }
+        .enemy-card .enemy-hp-bar > div.low { background: var(--warning); }
+        .enemy-card .enemy-ac { font-size: 10px; color: var(--text-muted); white-space: nowrap; }
+        .combat-input-hint { font-size: 11px; color: var(--danger); text-align: center; padding: 4px 0 0; }
+    </style>
+</head>
+<body>
+
+<!-- ================= 主界面 ================= -->
+<div class="screen home-screen active" id="homeScreen">
+    <div class="home-content">
+        <div style="position:absolute;top:16px;right:16px;">
+            <button class="theme-toggle-btn" onclick="toggleTheme()" id="homeThemeToggle" title="切换白天/夜间模式">
+                <svg class="theme-icon-sun" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+                <svg class="theme-icon-moon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+            </button>
+        </div>
+        <p class="home-est">Est. 2026</p>
+        <h1 class="home-title">以太叙事</h1>
+        <p class="home-subtitle-en">AETHERNARRATOR</p>
+        <p class="home-subtitle">自定义世界 · AI 生成 · 自由冒险</p>
+        <div class="menu-grid">
+            <button class="menu-card primary-card" onclick="showWorldList()">
+                <div class="menu-card-icon">&#x2694;</div>
+                <span class="menu-card-label">开始冒险</span>
+                <span class="menu-card-desc">创建或选择世界，展开你的奇幻旅程</span>
+            </button>
+            <button class="menu-card" onclick="showSaveList()">
+                <div class="menu-card-icon">&#x1F4BE;</div>
+                <span class="menu-card-label">继续旅程</span>
+                <span class="menu-card-desc">读取之前的存档，回到未完成的冒险</span>
+            </button>
+            <div class="menu-row">
+                <button class="menu-mini" onclick="showApiModal()">API 配置</button>
+                <button class="menu-mini" onclick="showSettingsModal()">显示设置</button>
+            </div>
+        </div>
+        <div class="home-disclaimer">
+            内容由 AI 生成，仅供参考。请认真辨别信息，勿将虚构内容视为事实。
+        </div>
+    </div>
+</div>
+
+<!-- ================= 选项弹窗 ================= -->
+<div class="modal-overlay" id="settingsModal">
+    <div class="modal">
+        <div class="modal-header">
+            <h2>选项</h2>
+            <button class="modal-close" onclick="closeModal('settingsModal')">×</button>
+        </div>
+        <div class="modal-body">
+            <div class="form-group">
+                <label>字体大小</label>
+                <div class="font-size-controls">
+                    <button class="font-size-btn" onclick="changeFontSize('small')" id="fontSmall">小</button>
+                    <button class="font-size-btn" onclick="changeFontSize('normal')" id="fontNormal">中</button>
+                    <button class="font-size-btn" onclick="changeFontSize('large')" id="fontLarge">大</button>
+                </div>
+            </div>
+            <div class="form-group">
+                <label>AI 创造性（温度）</label>
+                <input type="range" id="temperatureSlider" min="0" max="1" step="0.1" value="0.5" oninput="updateTempLabel()">
+                <div class="hint" id="tempLabel">0.5 — 剧情模式（稳定连贯）</div>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn" onclick="exportDebugLog()" style="flex:1">导出调试日志</button>
+            <button class="btn primary full-width" onclick="closeModal('settingsModal')">完成</button>
+        </div>
+    </div>
+</div>
+
+<!-- ================= 世界列表 ================= -->
+<div class="screen" id="worldListScreen">
+    <div class="nav-header">
+        <button class="back-btn" onclick="goHome()">←</button>
+        <h2 class="title">选择世界</h2>
+    </div>
+    <div class="create-world-bar" onclick="showCreateWorldModal()">
+        <span class="create-icon">+</span>
+        <span class="create-label">创建新世界</span>
+        <span class="create-desc">输入 IP 或原创世界观</span>
+    </div>
+    <div class="list-content" id="worldListContent"></div>
+</div>
+
+<!-- ================= 存档列表 ================= -->
+<div class="screen" id="saveListScreen">
+    <div class="nav-header">
+        <button class="back-btn" onclick="goHome()">←</button>
+        <h2 class="title">读取存档</h2>
+    </div>
+    <div class="list-content" id="saveListContent"></div>
+</div>
+
+<!-- ================= 游戏界面 ================= -->
+<div class="screen game-screen" id="gameScreen">
+    <div class="game-header">
+        <div>
+            <div class="world-name" id="gameWorldName">未知世界</div>
+            <div class="day-info" id="gameDayInfo">第 1 天 · 早晨<span class="cache-indicator hidden" id="cacheIndicator" title="缓存命中/未命中 token 数"></span></div>
+        </div>
+        <div class="header-actions">
+            <button onclick="showStatusPanel()">角色</button>
+            <button onclick="toggleTheme()" id="gameThemeToggle" title="切换白天/夜间模式" style="display:flex;align-items:center;gap:3px;">
+                <svg class="theme-icon-sun" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+                <svg class="theme-icon-moon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+            </button>
+            <button onclick="goHome()">返回主界面</button>
+            <button onclick="exportStory()" title="导出剧情文本">导出</button>
+        </div>
+    </div>
+    <div class="death-banner hidden" id="deathBanner">
+        <span class="death-banner-icon">&#x2620;</span>
+        <span class="death-banner-text" id="deathBannerText">角色已死亡</span>
+    </div>
+    <div class="game-body">
+        <!-- ===== 上方可视化交互区 ===== -->
+        <div class="game-top-panel" id="gameTopPanel">
+            <div id="mapContainer"></div>
+            <div id="combatPanel">
+                <div class="combat-header">
+                    <span class="combat-title">战斗中</span>
+                    <span class="combat-round" id="combatRoundLabel">回合 1</span>
+                </div>
+                <div class="enemy-list" id="enemyList"></div>
+                <div class="combat-input-hint" id="combatHint">选择行动或输入指令</div>
+            </div>
+            <div class="top-panel-placeholder" id="topPanelPlaceholder">
+                <div class="placeholder-icon">&#x2302;</div>
+                <div class="placeholder-text">探索世界，发现场景</div>
+            </div>
+        </div>
+
+        <!-- 拖拽分隔线 -->
+        <div class="panel-divider" id="panelDivider">
+            <div class="divider-handle"></div>
+        </div>
+
+        <!-- ===== 下方剧情滑动区 ===== -->
+        <div class="game-bottom-panel" id="gameBottomPanel">
+            <div class="game-log" id="gameLog"><div class="choices-row in-log" id="choicesArea"></div></div>
+            <div class="game-input-area">
+                <div class="loading-indicator" id="loadingIndicator">
+                    <span class="loading-dot"></span>
+                    <span class="loading-text">正在思考...</span>
+                    <span class="loading-time">0.0s</span>
+                </div>
+                <div class="action-menu" id="actionMenu"></div>
+                <div class="input-row">
+                    <input type="text" id="playerInput" placeholder="输入你想做的事..." onkeydown="if(!event.isComposing&&event.key==='Enter') submitInput()" inputmode="text" enterkeyhint="send" autocomplete="off" autocorrect="off" autocapitalize="none">
+                    <button class="send-btn" onclick="submitInput()">发送</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ================= 角色状态面板 ================= -->
+<div class="status-panel-overlay" id="statusPanelOverlay" onclick="closeStatusPanel(event)">
+    <div class="status-panel" onclick="event.stopPropagation()">
+        <div class="status-panel-header">
+            <h2>角色状态</h2>
+            <button class="close-btn" onclick="hideStatusPanel()">×</button>
+        </div>
+        <div class="status-tabs" id="statusTabs"></div>
+        <div class="status-content" id="statusContent"></div>
+    </div>
+</div>
+
+<!-- ================= API 输入弹窗 ================= -->
+<div class="modal-overlay" id="apiModal">
+    <div class="modal">
+        <div class="modal-header">
+            <h2>输入 API 配置</h2>
+            <button class="modal-close" onclick="closeModal('apiModal')">×</button>
+        </div>
+        <div class="modal-body">
+            <div class="form-group">
+                <label>AI 接口 Base URL</label>
+                <input type="text" id="baseUrl" placeholder="https://api.deepseek.com" value="https://api.deepseek.com">
+                <div class="hint">例如：DeepSeek 填 https://api.deepseek.com</div>
+            </div>
+            <div class="form-group">
+                <label>CORS 代理 URL（可选）</label>
+                <input type="text" id="corsProxy" placeholder="不填则直接调用 API">
+                <div class="hint">浏览器无法直接调用第三方 API（CORS 跨域限制）。解决方案：<br>① 使用 CORS 代理服务，将代理 URL 填入此处（如 https://your-proxy.workers.dev/proxy）<br>② 本地搭建 Cloudflare Workers / Nginx 反向代理<br>③ 开发测试时可安装浏览器 CORS 插件（不推荐长期使用）</div>
+            </div>
+            <div class="form-group">
+                <label>API Key</label>
+                <input type="password" id="apiKey" placeholder="sk-...">
+                <div class="hint">密钥仅保存在你的浏览器本地，不会上传</div>
+            </div>
+            <div class="form-group">
+                <label>模型名称</label>
+                <input type="text" id="modelName" placeholder="deepseek-v4-flash" value="deepseek-v4-flash">
+            </div>
+            <div class="form-group">
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                    <input type="checkbox" id="mockMode" style="width:auto;">
+                    <span>模拟模式（不调用真实 API，仅供体验）</span>
+                </label>
+            </div>
+            <div class="form-group">
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                    <input type="checkbox" id="noStreamMode" style="width:auto;">
+                    <span>禁用流式输出（CORS 代理不支持时开启）</span>
+                </label>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn secondary" onclick="closeModal('apiModal')">返回</button>
+            <button class="btn primary" onclick="saveApiConfig()">确认</button>
+        </div>
+    </div>
+</div>
+
+<!-- ================= 创建世界弹窗 ================= -->
+<div class="modal-overlay" id="createWorldModal">
+    <div class="modal">
+        <div class="modal-header">
+            <h2>创建新世界</h2>
+            <button class="modal-close" onclick="closeModal('createWorldModal')">×</button>
+        </div>
+        <div class="modal-body">
+            <div class="form-group">
+                <label>世界名称</label>
+                <input type="text" id="worldName" placeholder="例如：剑来、哈利波特、原创仙侠">
+            </div>
+            <div class="form-group">
+                <label>世界类型</label>
+                <select id="worldType" onchange="onWorldTypeChange(this.value)">
+                    <option value="ip">基于已有 IP / 小说</option>
+                    <option value="original">原创世界观</option>
+                </select>
+            </div>
+            <!-- 已有IP：作品名称 + 上传提示 -->
+            <div class="conditional-field show" id="ipNameField">
+                <div class="form-group">
+                    <label>作品名称</label>
+                    <input type="text" id="ipName" placeholder="例如：剑来、哈利波特、三体、红楼梦...">
+                    <div class="hint">AI 将根据作品名称从训练数据中检索相关设定、人物、力量体系来生成世界观。</div>
+                </div>
+                <div class="upload-tip-box">
+                    <div class="upload-tip-title">建议上传源文件以获得更精准的生成效果</div>
+                    <div class="upload-tip-desc">仅凭作品名称，AI 依赖自身训练数据，可能存在遗漏或偏差。上传原著 TXT/DOCX 文件后，AI 能从原文中精确提取世界观设定、人物关系和叙事风格。</div>
+                </div>
+            </div>
+            <div class="form-group">
+                <label>世界观描述</label>
+                <textarea id="worldDesc" placeholder="可以直接填写原作的世界观概述，也可以在此基础上修改...&#10;例如：在原著的世界观基础上，增加了一个隐秘的地下组织..."></textarea>
+                <div class="hint" id="worldDescHint">你可以直接使用原作的世界观描述，也可以在此基础上进行修改和扩展——例如调整力量体系、加入新势力、改变时间线等。描述越详细，AI 生成的剧情越贴合你的构想。</div>
+            </div>
+            <div class="form-group">
+                <label>主角设定（可选）</label>
+                <textarea id="heroDesc" placeholder="例如：一名来自小镇的少年，性格谨慎，渴望变强..."></textarea>
+            </div>
+
+            <!-- 上传源文件 -->
+            <div class="form-group">
+                <label>上传世界观/小说源文件（可选）</label>
+                <div class="file-upload-area" id="fileUploadArea" onclick="document.getElementById('sourceFile').click()">
+                    <span id="fileUploadText">点击上传 TXT / DOCX / EPUB 文件</span>
+                </div>
+                <input type="file" id="sourceFile" accept=".txt,.docx,.epub" onchange="handleFileSelect(event)">
+                <div class="upload-hint">支持 .txt、.docx 和 .epub 格式，源文件内容将作为世界观生成的参考材料</div>
+            </div>
+
+            <!-- 文风参考 -->
+            <div class="form-group">
+                <label>文风参考</label>
+                <div class="radio-group" id="styleRefGroup">
+                    <label class="radio-option selected" onclick="selectStyleRef('original', this)">
+                        <input type="radio" name="styleRef" value="original" checked>
+                        <div class="radio-indicator"></div>
+                        <div>
+                            <div class="radio-label">参考原版文风</div>
+                            <div class="radio-desc">AI 将模仿源文件或描述中的写作风格</div>
+                        </div>
+                    </label>
+                    <label class="radio-option" onclick="selectStyleRef('custom', this)">
+                        <input type="radio" name="styleRef" value="custom">
+                        <div class="radio-indicator"></div>
+                        <div>
+                            <div class="radio-label">自定义文风</div>
+                            <div class="radio-desc">手动输入你想要的叙事风格</div>
+                        </div>
+                    </label>
+                    <label class="radio-option" onclick="selectStyleRef('none', this)">
+                        <input type="radio" name="styleRef" value="none">
+                        <div class="radio-indicator"></div>
+                        <div>
+                            <div class="radio-label">不参考文风</div>
+                            <div class="radio-desc">AI 将使用通用叙事风格</div>
+                        </div>
+                    </label>
+                </div>
+                <div class="conditional-field" id="customStyleField">
+                    <textarea id="customStyle" placeholder="描述你想要的文风，例如：冷峻克制、江湖气息浓厚、对话简练不拖沓..." style="min-height:80px;"></textarea>
+                </div>
+            </div>
+
+            <!-- 剧情自由度 -->
+            <div class="form-group">
+                <label>剧情自由度</label>
+                <div class="range-slider-wrapper">
+                    <input type="range" id="plotFreedom" min="1" max="5" value="3" oninput="updatePlotFreedomLabel(this.value)">
+                    <div class="range-current" id="plotFreedomLabel">适中发散 — 在原著世界观内适度创新</div>
+                    <div class="range-labels">
+                        <span>严格遵循原著</span>
+                        <span>完全自由创作</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 特殊要求（世界观生成） -->
+            <div class="form-group">
+                <label>特殊要求（世界观生成，可选）</label>
+                <div class="radio-group" id="worldPrefixGroup">
+                    <label class="radio-option selected" onclick="toggleWorldPrefix(false, this)">
+                        <input type="radio" name="worldPrefixEnable" value="off" checked>
+                        <div class="radio-indicator"></div>
+                        <div>
+                            <div class="radio-label">不添加</div>
+                            <div class="radio-desc">不附加额外指令</div>
+                        </div>
+                    </label>
+                    <label class="radio-option" onclick="toggleWorldPrefix(true, this)">
+                        <input type="radio" name="worldPrefixEnable" value="on">
+                        <div class="radio-indicator"></div>
+                        <div>
+                            <div class="radio-label">添加特殊要求</div>
+                            <div class="radio-desc">输入的内容将作为 AI Prompt 前缀用于生成知识库等世界观内容</div>
+                        </div>
+                    </label>
+                </div>
+                <div class="conditional-field" id="worldPrefixField">
+                    <textarea id="worldPrefix" placeholder="输入你想附加到世界观生成 AI Prompt 前面的特殊要求..." style="min-height:80px;"></textarea>
+                </div>
+            </div>
+
+            <!-- 特殊要求（对话） -->
+            <div class="form-group">
+                <label>特殊要求（对话，可选）</label>
+                <div class="radio-group" id="customPrefixGroup">
+                    <label class="radio-option selected" onclick="toggleCustomPrefix(false, this)">
+                        <input type="radio" name="customPrefixEnable" value="off" checked>
+                        <div class="radio-indicator"></div>
+                        <div>
+                            <div class="radio-label">不添加</div>
+                            <div class="radio-desc">不附加额外指令</div>
+                        </div>
+                    </label>
+                    <label class="radio-option" onclick="toggleCustomPrefix(true, this)">
+                        <input type="radio" name="customPrefixEnable" value="on">
+                        <div class="radio-indicator"></div>
+                        <div>
+                            <div class="radio-label">添加特殊要求</div>
+                            <div class="radio-desc">输入的内容将作为 AI Prompt 前缀注入每次对话</div>
+                        </div>
+                    </label>
+                </div>
+                <div class="conditional-field" id="customPrefixField">
+                    <textarea id="customPrefix" placeholder="输入你想附加到 AI Prompt 前面的特殊要求，例如：叙事要更加黑暗残酷 / 增加更多悬疑元素 / NPC 对话要更口语化..." style="min-height:80px;"></textarea>
+                </div>
+            </div>
+
+        </div>
+        <div class="modal-footer">
+            <button class="btn secondary" onclick="closeModal('createWorldModal')">返回</button>
+            <button class="btn primary" id="generateWorldBtn" onclick="generateWorld()">确认生成</button>
+        </div>
+    </div>
+</div>
+
+<!-- ================= 世界详情弹窗 ================= -->
+<div class="modal-overlay" id="worldDetailModal">
+    <div class="modal">
+        <div class="modal-header">
+            <h2 id="detailWorldTitle">世界详情</h2>
+            <button class="modal-close" onclick="closeModal('worldDetailModal')">×</button>
+        </div>
+        <div class="modal-body" id="detailWorldBody"></div>
+        <div class="modal-footer">
+            <button class="btn secondary" onclick="closeModal('worldDetailModal')">返回</button>
+            <button class="btn primary" onclick="startGame()">开始游玩</button>
+        </div>
+    </div>
+</div>
+
+<!-- ================= 游戏结束弹窗 ================= -->
+<div class="game-over-overlay" id="gameOverOverlay">
+    <div class="game-over-box">
+        <h2>游戏结束</h2>
+        <div class="reason" id="gameOverReason">你的旅程到此为止。</div>
+        <button class="btn primary full-width" onclick="backToHomeAfterGameOver()">返回主界面</button>
+        <button class="btn secondary full-width" style="margin-top:8px;" onclick="reviewDeathScene()">查看结局</button>
+    </div>
+</div>
+
+<!-- ================= 角色创建弹窗 ================= -->
+<div class="modal-overlay" id="charCreateModal">
+    <div class="modal cc-modal">
+        <div class="modal-header">
+            <h2>创建你的角色</h2>
+            <button class="modal-close" onclick="CharacterCreatorUI.hide()">×</button>
+        </div>
+        <div class="cc-steps" id="ccProgressDots">
+            <span class="cc-dot active">种族</span>
+            <span class="cc-dot">职业</span>
+            <span class="cc-dot">属性</span>
+            <span class="cc-dot">确认</span>
+        </div>
+        <div class="cc-body" id="ccSteps">
+            <div id="ccStep1"><div class="cc-option-list" id="ccRaceList"></div></div>
+            <div id="ccStep2"><div class="cc-option-list" id="ccClassList"></div></div>
+            <div id="ccStep3"><div id="ccAttrArea"></div></div>
+            <div id="ccStep4"><div id="ccSummaryArea"></div></div>
+        </div>
+        <div class="cc-nav">
+            <button class="cc-btn cc-btn-secondary" id="ccPrevBtn" onclick="CharacterCreatorUI.prevStep()">上一步</button>
+            <button class="cc-btn cc-btn-primary" id="ccNextBtn" onclick="CharacterCreatorUI.nextStep()">下一步</button>
+        </div>
+    </div>
+</div>
+
+<!-- ================= Toast ================= -->
+<div class="toast" id="toast"></div>
+
+<script src="js/app-core.js"></script>
+<script src="js/app-ui.js"></script>
+<script src="js/app-ai.js"></script>
+<script src="js/app-game.js"></script>
+<script>
+/* ================= 启动 ================= */
+// 点击日志区可跳过当前打字效果
+document.getElementById("gameLog").addEventListener("click", () => {
+    skipTypewriter();
+});
+// 按回车也可跳过（不影响输入框，输入框的回车由其自身处理）
+document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" || (e.key === "Enter" && document.activeElement !== document.getElementById("playerInput"))) {
+        skipTypewriter();
+    }
+});
+init();
+</script>
+</body>
+</html>
