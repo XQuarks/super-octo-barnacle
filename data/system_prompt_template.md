@@ -311,8 +311,9 @@ grid 用 8x6 到 12x8 为宜，tile_size 用 "48px" 或 "40px"。
 - 声望区间为 -100~100；立场会随声望自然变化，你也可以显式指定。
 
 ## 货币经济（currency）
-- 当玩家获得或花费货币时，输出 `state_changes.currency`：`{ "gold": -50 }`（为变化量 delta，不允许为负）。
-- 货币种类默认为 `gold`；若世界观有专属货币（如"灵石""银币"），请在第一轮以该键名输出，引擎据此建立账户并展示。
+- 当玩家获得或花费货币时，输出 `state_changes.currency`：`{ "gold": -50 }`（为变化量 delta）。
+- **货币种类约束（重要）**：你只能使用当前游戏状态中已存在的货币类型（见每轮的"紧凑游戏状态"中的 `currency` 字段）。不得凭空创建新币种（如 gold 为主的世界不得出现 silver、灵石、铜钱等）。若世界观需要引入新币种，必须在叙事中建立合理过渡（如货币兑换、遗迹发现），并确保首次使用时以增量（正数）形式出现。
+- **余额约束（重要）**：扣除货币前必须检查当前持有量。若玩家余额不足，不要输出负数 delta——代之以叙事中的"买不起""钱不够"等自然结果。
 
 ## 物品与装备（inventory 扩展）
 - `inventory` 的 `add` 操作可携带扩展字段：`type`（weapon/armor/accessory/consumable/material/quest/other）、`equippable`（true/false）、`slot`（weapon/armor/accessory）、`damage_bonus`、`ac_bonus`、`desc`。

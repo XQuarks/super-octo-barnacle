@@ -353,6 +353,9 @@ function showScreen(id) {
 }
 
 function goHome() {
+    // 回到主界面时恢复"编辑主角"按钮
+    var heroBtn = document.getElementById("heroEditBtn");
+    if (heroBtn) heroBtn.style.display = "";
     showScreen("homeScreen");
 }
 
@@ -2012,6 +2015,9 @@ async function startGame() {
     renderScenePanel();
 
     showScreen("gameScreen");
+    // ★ 进入游戏后隐藏"编辑主角"按钮（主角设定只能在进入世界前编辑）
+    var heroBtn = document.getElementById("heroEditBtn");
+    if (heroBtn) heroBtn.style.display = "none";
     document.getElementById("gameWorldName").textContent = currentWorld.name;
     updateGameDayInfo();
     renderLog(true);
@@ -2042,9 +2048,21 @@ async function startGame() {
         renderChoices(currentChoices);
     }
 
-    // ★ CRPG: 初始化动作菜单
+    // ★ CRPG: 初始化动作菜单 + 地图
     if (typeof ActionMenu !== "undefined") {
         ActionMenu.render(gameState);
+    }
+    // ★ 渲染地图（如果初始状态包含地图数据）
+    if (gameState.current_map && typeof TileMap !== "undefined") {
+        if (currentWorld && currentWorld.fog_of_war !== false
+            && !gameState.current_map.explored
+            && typeof initFog === "function") {
+            initFog(gameState.current_map);
+        }
+        TileMap.render(gameState.current_map);
+    }
+    if (typeof updateTopPanelPlaceholder === "function") {
+        updateTopPanelPlaceholder();
     }
 }
 
@@ -2172,6 +2190,9 @@ function loadSave(saveId) {
 
     showToast(`加载存档：${save.worldName}`, "success");
     showScreen("gameScreen");
+    // ★ 加载存档后隐藏"编辑主角"按钮
+    var heroBtn = document.getElementById("heroEditBtn");
+    if (heroBtn) heroBtn.style.display = "none";
     document.getElementById("gameWorldName").textContent = save.worldName;
     updateGameDayInfo();
 
@@ -2731,16 +2752,25 @@ function closeShopModal() {
 
 function buyShopItem(itemId) {
     if (!_shopModalId || !currentWorld || !gameState) return;
-    const r = buyFromShop(gameState, currentWorld, _shopModalId, itemId, 1);
+    var r = buyFromShop(gameState, currentWorld, _shopModalId, itemId, 1);
     showToast(r.msg, r.ok ? "success" : "error");
-    if (r.ok) { openShopModal(_shopModalId); if (typeof renderStatusPanel === "function") renderStatusPanel("items"); saveState(); }
+    if (r.ok) {
+        saveState();
+        openShopModal(_shopModalId);
+        if (typeof renderStatusPanel === "function") renderStatusPanel("items");
+    }
 }
 
 function sellShopItem(itemId) {
     if (!_shopModalId || !currentWorld || !gameState) return;
-    const r = sellToShop(gameState, currentWorld, _shopModalId, itemId, 1);
+    var r = sellToShop(gameState, currentWorld, _shopModalId, itemId, 1);
     showToast(r.msg, r.ok ? "success" : "error");
-    if (r.ok) { openShopModal(_shopModalId); if (typeof renderStatusPanel === "function") renderStatusPanel("items"); saveState(); }
+    if (r.ok) {
+        saveState();
+        // 刷新店铺弹窗 + 强制刷新物品面板
+        openShopModal(_shopModalId);
+        if (typeof renderStatusPanel === "function") renderStatusPanel("items");
+    }
 }
 
 // 从任务板接受任务
@@ -2772,24 +2802,51 @@ function toggleEquip(itemId) {
     if (typeof ActionMenu !== "undefined") ActionMenu.render(gameState);
 }
 
-// ★ ⑤ 合成：校验材料 → 消耗 inputs → 产出 output（全局供面板 onclick 调用）
+// ★ ⑤ 合成：直接操作 inventory（绕过 applyStateChanges，避免 item_id 匹配不确定性）
 function doCraft(recipeId) {
     if (!gameState) return;
-    const recipe = (gameState.crafting_recipes || []).find(function(r) { return r.id === recipeId; });
+    var recipe = (gameState.crafting_recipes || []).find(function(r) { return r.id === recipeId; });
     if (!recipe || !recipe.output) { showToast("配方无效", "warn"); return; }
-    const inv = gameState.inventory || [];
-    for (const req of (recipe.inputs || [])) {
-        const have = inv.find(function(i) { return i.item_id === req.item_id; });
+    if (!gameState.inventory) gameState.inventory = [];
+    var inv = gameState.inventory;
+    // 校验材料
+    var inputsOk = true;
+    (recipe.inputs || []).forEach(function(req) {
+        var have = inv.find(function(i) { return i.item_id === req.item_id; });
         if (!have || have.count < req.count) {
             showToast("材料不足：" + (req.name || req.item_id) + " 需 " + req.count, "warn");
-            return;
+            inputsOk = false;
         }
+    });
+    if (!inputsOk) return;
+    // 消耗材料（直接修改，确保每次操作后 search 仍能匹配到最新 inventory）
+    (recipe.inputs || []).forEach(function(req) {
+        var item = gameState.inventory.find(function(i) { return i.item_id === req.item_id; });
+        if (item) {
+            item.count -= req.count;
+            if (item.count <= 0) {
+                gameState.inventory = gameState.inventory.filter(function(i) { return i.item_id !== req.item_id; });
+            }
+        }
+    });
+    // 产出成品
+    var existing = gameState.inventory.find(function(i) { return i.item_id === recipe.output.item_id; });
+    if (existing) {
+        existing.count += (recipe.output.count || 1);
+    } else {
+        gameState.inventory.push({
+            item_id: recipe.output.item_id, name: recipe.output.name,
+            count: recipe.output.count || 1, type: recipe.output.type || null,
+            equippable: recipe.output.equippable || false, slot: recipe.output.slot || null,
+            damage_bonus: recipe.output.damage_bonus || 0, ac_bonus: recipe.output.ac_bonus || 0,
+            desc: recipe.output.desc || ""
+        });
     }
-    applyStateChanges({ inventory: (recipe.inputs || []).map(function(req) { return { op: "remove", item_id: req.item_id, count: req.count }; }) });
-    applyStateChanges({ inventory: [{ op: "add", item_id: recipe.output.item_id, name: recipe.output.name, count: recipe.output.count || 1 }] });
     saveState();
     showToast("合成成功：" + (recipe.output.name || recipe.output.item_id), "success");
-    if (typeof renderStatusPanel === "function") renderStatusPanel(currentStatusTab);
+    // 强制刷新物品面板（不管当前在哪个 tab）
+    if (typeof renderStatusPanel === "function") renderStatusPanel("items");
+    if (typeof ActionMenu !== "undefined") ActionMenu.render(gameState);
 }
 
 function addManualMemory() {
@@ -2989,10 +3046,15 @@ function renderCombatPanel() {
 
     if (!inCombat || !enemies || enemies.length === 0) {
         panel.classList.remove("show");
+        if (typeof updateTopPanelPlaceholder === "function") updateTopPanelPlaceholder();
         return;
     }
 
     panel.classList.add("show");
+    // ★ 地图与战斗面板互斥：战斗时隐藏地图
+    var mapEl = document.getElementById("mapContainer");
+    if (mapEl) mapEl.classList.remove("show");
+    if (typeof updateTopPanelPlaceholder === "function") updateTopPanelPlaceholder();
 
     const round = gameState.combat_stats.combat_round || 1;
     document.getElementById("combatRoundLabel").textContent = "回合 " + round;

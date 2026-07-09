@@ -149,11 +149,31 @@ function applyStateChanges(changes) {
         }
     }
 
-    // ★ ⑤ 货币经济：按货币种类累加 delta（不允许为负）
+    // ★ ⑤ 货币经济：按货币种类累加 delta（不允许为负，不允许超支，不允许新增未定义的币种）
     if (changes.currency) {
+        var curWarnings = [];
         for (const [cur, delta] of Object.entries(changes.currency)) {
-            if (typeof s.currency[cur] !== "number") s.currency[cur] = 0;
-            s.currency[cur] = Math.max(0, s.currency[cur] + (typeof delta === "number" ? delta : 0));
+            if (typeof delta !== "number" || delta === 0) continue;
+            // ★ 拒绝未定义的币种：AI 只能操作 gameState 中已存在的货币类型
+            if (!(cur in s.currency)) {
+                var msg = "[S3] 拒绝未定义币种 " + cur + " → 当前仅：" + Object.keys(s.currency).join(", ");
+                console.warn(msg);
+                curWarnings.push("AI 试图使用不存在的货币「" + cur + "」，已阻止");
+                continue;
+            }
+            var have = typeof s.currency[cur] === "number" ? s.currency[cur] : 0;
+            // ★ 支出校验：不允许超支（AI 幻觉保护）
+            if (delta < 0 && have < Math.abs(delta)) {
+                var msg2 = "[S3] 货币不足，拒绝扣款 " + cur + " 需要" + Math.abs(delta) + " 仅有" + have;
+                console.warn(msg2);
+                curWarnings.push("余额不足（" + cur + "：" + have + "），AI 试图扣除 " + Math.abs(delta) + "，已阻止");
+                continue;
+            }
+            s.currency[cur] = Math.max(0, have + delta);
+        }
+        // 若有被拦截的货币操作，在行为记录中提醒玩家（注意：showToast 可能未定义）
+        if (curWarnings.length && typeof addBehaviorRecords === "function") {
+            addBehaviorRecords(["【系统提示】" + curWarnings.join("；") + "。若叙事情节需要，请在后续输入中手动调整。"]);
         }
     }
 

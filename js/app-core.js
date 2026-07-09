@@ -362,13 +362,33 @@ function initPanelDivider() {
 
 // 切换顶部面板占位符 / 场景卡（地图与战斗优先级最高，其次场景卡，最后占位符）
 function updateTopPanelPlaceholder() {
-    const placeholder = document.getElementById("topPanelPlaceholder");
-    const scenePanel = document.getElementById("scenePanel");
-    const mapShown = document.getElementById("mapContainer").classList.contains("show");
-    const combatShown = document.getElementById("combatPanel").classList.contains("show");
-    const inGame = !mapShown && !combatShown && scenePanel && scenePanel.innerHTML.trim() !== "";
-    if (placeholder) placeholder.style.display = inGame ? "none" : "";
-    if (scenePanel) scenePanel.style.display = inGame ? "" : "none";
+    var mapEl = document.getElementById("mapContainer");
+    var combatEl = document.getElementById("combatPanel");
+    var placeholder = document.getElementById("topPanelPlaceholder");
+    var scenePanel = document.getElementById("scenePanel");
+    var mapShown = mapEl && mapEl.classList.contains("show");
+    var combatShown = combatEl && combatEl.classList.contains("show");
+
+    // ★ 地图优先级最高：地图显示时，隐藏战斗面板
+    if (mapShown) {
+        if (combatEl) combatEl.classList.remove("show");
+        if (placeholder) placeholder.style.display = "none";
+        if (scenePanel) scenePanel.style.display = "none";
+        return;
+    }
+
+    // ★ 战斗次之：战斗显示时，确保 map 不抢空间
+    if (combatShown) {
+        if (mapEl) mapEl.classList.remove("show");
+        if (placeholder) placeholder.style.display = "none";
+        if (scenePanel) scenePanel.style.display = "none";
+        return;
+    }
+
+    // ★ 都有场景内容且无地图/战斗 → 显示场景卡
+    var hasScene = scenePanel && scenePanel.innerHTML.trim() !== "";
+    if (placeholder) placeholder.style.display = hasScene ? "none" : "";
+    if (scenePanel) scenePanel.style.display = hasScene ? "" : "none";
 }
 
 /* ================= C) 商店 NPC（固定货架/定价）+ 阵营任务 =================

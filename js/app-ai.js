@@ -881,6 +881,13 @@ function buildTurnUserMessage(input, retrieved) {
     // P0: 紧凑游戏状态
     userPrompt += "# 当前游戏状态\n\n" + buildCompactGameState() + "\n\n";
 
+    // ★ 货币约束提醒：每轮告知 AI 当前可用币种，防止 AI 幻觉出不存在的新币种
+    if (gameState && gameState.currency) {
+        var curKeys = Object.keys(gameState.currency).filter(function(k) { return typeof gameState.currency[k] === "number"; });
+        var curInfo = curKeys.map(function(k) { return k + ":" + gameState.currency[k]; }).join("，");
+        userPrompt += "# 货币约束（重要）\n本世界仅使用以下货币种类，不得在 state_changes.currency 中创建新的币种：\n" + (curInfo || "无") + "\n扣款前必须检查余额——余额不足时应在叙事中体现买不起而非扣款。\n\n";
+    }
+
     // ★ 预言机 / 混沌因子：每轮按 chaos_factor/9 概率注入"随机事件触发"提示（关闭时整段跳过）
     // 与 buildOracleSection 保持一致：oracle 字段缺失时默认启用、混沌因子 5（旧世界兼容）
     const _o = currentWorld && currentWorld.oracle;

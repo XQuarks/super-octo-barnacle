@@ -236,6 +236,8 @@ window.TileMap = (function() {
 
     _container.innerHTML = html;
     _container.classList.add('show');
+    // ★ 地图渲染后隐藏战斗面板和占位符
+    if (typeof updateTopPanelPlaceholder === "function") updateTopPanelPlaceholder();
 
     // ★ 添加点击交互
     var tiles = _container.querySelectorAll('.tile-cell-wrapper');
@@ -258,6 +260,8 @@ window.TileMap = (function() {
       _container.innerHTML = '';
       _container.classList.remove('show');
     }
+    // ★ 地图清除后检查是否显示占位符/场景卡
+    if (typeof updateTopPanelPlaceholder === "function") updateTopPanelPlaceholder();
   }
 
   /**
