@@ -3,6 +3,12 @@
 let isCoreLoreCached = false;
 // A2: 单一真相，消除 buildSystemPrompt 与 isLoreFullInSystem 的 12000/20000 不一致
 const LORE_FULL_THRESHOLD = 20000;
+// ★ C1: 基调缓存独立于 system prompt，使 system prompt 完全稳定
+let cachedToneGuide = null;
+let cachedToneWorldId = null;
+// ★ U1: AI 请求取消机制——全局 AbortController，供取消按钮访问
+let _llmAbortController = null;
+let _llmCancelRequested = false;
 
 // 双模式：纯叙事（AI 文字扮演冒险）vs 跑团（TRPG）
 function isNarrativeMode(world) {
@@ -34,16 +40,30 @@ async function ensureEmbeddingModel() {
 
 // A1: 为某世界的知识片段补齐向量。格式必须与 tools/generate_embeddings.py 完全一致，
 // 否则新片段与预计算向量不在同一向量空间，余弦相似度无意义。
+// 内容指纹：片段文本变化时指纹变化，用于跳过「embedding 已最新」的片段（G1 优化 + 修编辑后旧向量不更新 bug）
+function snippetFingerprint(s) {
+    const base = `${s.category || ""}|${s.title || ""}|${s.content || ""}|${(s.keywords || []).join(",")}`;
+    let h = 0x811c9dc5;
+    for (let i = 0; i < base.length; i++) {
+        h ^= base.charCodeAt(i);
+        h = Math.imul(h, 0x01000193);
+    }
+    return (h >>> 0).toString(36);
+}
+
 async function computeEmbeddingsForWorld(world) {
     if (!world || !world.lore_kb || !world.lore_kb.snippets) return;
     await ensureEmbeddingModel();
     if (!embeddingModel) return;
     for (const s of world.lore_kb.snippets) {
-        if (s.embedding && Array.isArray(s.embedding) && s.embedding.length) continue;
+        // G1: 已带 embedding 且内容未变 → 跳过（惰性重算，省 ONNX 计算）
+        const fp = snippetFingerprint(s);
+        if (s.embedding && Array.isArray(s.embedding) && s.embedding.length && s.emb_fp === fp) continue;
         try {
             const text = `${s.category} ${s.title} ${s.content} ${(s.keywords || []).join(" ")}`;
             const out = await embeddingModel(text, { pooling: "mean", normalize: true });
             s.embedding = Array.from(out.data);
+            s.emb_fp = fp;
         } catch (e) { /* 留空 → 该片段仅走关键词检索，graceful 降级 */ }
     }
 }
@@ -79,7 +99,9 @@ const TRPG_RULES_BLOCK = `# D20 规则系统
 - WIS 影响角色直觉、察言观色、野外生存、医疗能力
 - CHA 影响角色说服、欺骗、恐吓、社交魅力
 
-当玩家尝试有风险或不确定结果的行动时，系统会在玩家输入后附加 [系统规则结果] 报告（如 D20 攻击检定结果）。你需要基于此结果叙事——成功时描写得手的过程，失败时描写失手的原因和后果。出目 20 为大成功（额外好处），出目 1 为大失败（严重后果）。`;
+当玩家尝试有风险或不确定结果的行动时，系统会在玩家输入后附加 [系统规则结果] 报告（如 D20 攻击检定、或交谈/物品/移动的技能检定结果）。你需要基于此结果叙事——成功时描写得手的过程，失败时描写失手的原因和后果。出目 20 为大成功（额外好处），出目 1 为大失败（严重后果）。
+
+非战斗技能检定说明：玩家点击「交谈」会触发 说服(CHA) 检定、「物品」触发 巧手(DEX) 检定、「移动」触发 体操(DEX) 检定，DC 默认 12-13。这些同样以 [系统规则结果] 形式附在输入后，你必须据此叙事：检定成功时让交谈/操作/移动达成玩家意图，失败时描写碰壁、失误或被察觉的后果（但不必然导致游戏结束）。`;
 
 const NARRATIVE_RULES_BLOCK = `# 纯叙事模式（AI 文字扮演冒险）
 
@@ -97,11 +119,11 @@ function getWorldLoreKB() {
     return (currentWorld && currentWorld.lore_kb) || loreKB;
 }
 
-function keywordRetrieve(input, topK = 5) {
+function keywordRetrieve(input, topK = 5, _preTerms = null) {
     const kb = getWorldLoreKB();
     if (!kb || !kb.snippets) return [];
-    // 中文分词：Intl.Segmenter 按词语切分，"我要去大观园找林黛玉" → ["我","要","去","大观园","找","林黛玉"]
-    const terms = segmentChinese(input);
+    // ★ P3: 接受预分词（由 retrieve() 入口统一计算，避免每轮重复切 2-3 次）
+    const terms = _preTerms || segmentChinese(input);
     if (!terms.length) return [];
     const scored = kb.snippets.map(s => {
         let score = 0;
@@ -154,6 +176,17 @@ function segmentChinese(text) {
     return [...new Set(terms)];
 }
 
+// ★ P2: embedding 检索查询缓存 + 关键词预过滤，避免小 KB 重复计算、大 KB 全量扫描
+let _embCacheQuery = null;
+let _embCacheResult = null;
+let _embCacheFp = null;  // KB 内容指纹（段数+最后片段首 40 字符），KB 变化时缓存失效
+
+function _kbFingerprint(kb) {
+    if (!kb || !kb.snippets) return "0";
+    const last = kb.snippets[kb.snippets.length - 1];
+    return kb.snippets.length + "|" + ((last && last.content) ? last.content.slice(0, 40) : "");
+}
+
 async function embeddingRetrieve(input, topK = 5) {
     const kb = getWorldLoreKB();
     if (!kb || !kb.snippets || !kb.snippets[0] || !kb.snippets[0].embedding) return [];
@@ -166,13 +199,46 @@ async function embeddingRetrieve(input, topK = 5) {
             return [];
         }
     }
+
+    // ★ P2: 查询缓存——同输入 + KB 未变 → 直接复用（省 ONNX 推理 + 全量扫描）
+    const kbFp = _kbFingerprint(kb);
+    if (_embCacheQuery === input && _embCacheFp === kbFp && _embCacheResult) {
+        return _embCacheResult;
+    }
+
+    // ★ P2: 大 KB（≥50 片段）先用关键词粗筛候选池，余弦扫描只对 Top-25 进行
+    const allSnippets = kb.snippets;
+    let candidates = allSnippets;
+    if (allSnippets.length >= 50) {
+        const terms = segmentChinese(input);
+        if (terms.length) {
+            const preScored = allSnippets.map(s => {
+                let score = 0;
+                const text = (s.category + " " + s.title + " " + s.content + " " + (s.keywords || []).join(" ")).toLowerCase();
+                for (const t of terms) {
+                    if (text.includes(t)) score += 1;
+                    if ((s.keywords || []).some(k => k.toLowerCase().includes(t))) score += 2;
+                    if (s.title.toLowerCase().includes(t)) score += 2;
+                }
+                return { s, score };
+            }).filter(x => x.score > 0).sort((a, b) => b.score - a.score);
+            // 取 top 25 关键词语义候选项做精确余弦，其余跳过
+            candidates = preScored.slice(0, 25).map(x => x.s);
+        }
+    }
+
     const out = await embeddingModel(input, { pooling: "mean", normalize: true });
     const qVec = Array.from(out.data);
-    const scored = kb.snippets.map(s => {
+    const scored = candidates.map(s => {
         const sim = cosineSimilarity(qVec, s.embedding);
         return { snippet: s, score: sim };
     }).sort((a, b) => b.score - a.score).slice(0, topK);
-    return scored.map(x => x.snippet);
+
+    const result = scored.map(x => x.snippet);
+    _embCacheQuery = input;
+    _embCacheResult = result;
+    _embCacheFp = kbFp;
+    return result;
 }
 
 function cosineSimilarity(a, b) {
@@ -186,9 +252,12 @@ function cosineSimilarity(a, b) {
 }
 
 async function retrieve(input) {
+    // ★ P3: 中文分词只切一次，传入 keywordRetrieve + retrieveBehaviorRecords 共享
+    const terms = segmentChinese(input);
+
     // RAG 并行化：关键词检索和向量检索同时进行
     const [keyword, embedding] = await Promise.all([
-        Promise.resolve(keywordRetrieve(input, 7)),
+        Promise.resolve(keywordRetrieve(input, 7, terms)),
         embeddingRetrieve(input, 7)
     ]);
     const merged = new Map();
@@ -199,16 +268,21 @@ async function retrieve(input) {
         else merged.set(s.id, { snippet: s, score: 2 });
     }
 
-    // 加入玩家行为记录
-    const behavior = retrieveBehaviorRecords(input, 3);
+    // 加入玩家行为记录（★ P3: 复用预分词）
+    const behavior = retrieveBehaviorRecords(input, 3, terms);
     for (const b of behavior) {
         merged.set("behavior_" + b.id, { snippet: { id: "behavior_" + b.id, category: "行为记录", title: "关键事实", content: b.text }, score: 1.5 });
     }
 
-    // A3: 融合排序后做类别配额，保证多样性（避免 8 条全来自"人物"类）
+    // ★ C3: 融合排序+确定性 tiebreaker+类别配额
+    // 分数相同时按 snippet.id 字母序，保证同输入同结果（避免 DeepSeek 前缀缓存因排序抖动失效）
     const CAT_LIMIT = 3;
     const byCat = {};
-    const ordered = Array.from(merged.values()).sort((a, b) => b.score - a.score);
+    const ordered = Array.from(merged.values()).sort(function(a, b) {
+        var diff = b.score - a.score;
+        if (diff !== 0) return diff;
+        return (a.snippet.id || "").localeCompare(b.snippet.id || "");
+    });
     const out = [];
     for (const x of ordered) {
         const cat = (x.snippet.category || "其他");
@@ -220,9 +294,10 @@ async function retrieve(input) {
 }
 
 /* ================= 关键事实 / 玩家行为记录 ================= */
-function retrieveBehaviorRecords(input, topK = 3) {
+function retrieveBehaviorRecords(input, topK = 3, _preTerms = null) {
     if (!currentWorld || !currentWorld.behavior_records) return [];
-    const terms = segmentChinese(input);
+    // ★ P3: 接受预分词（由 retrieve() 入口统一计算，避免每轮重复切 2-3 次）
+    const terms = _preTerms || segmentChinese(input);
     if (!terms.length) return [];
     const scored = currentWorld.behavior_records.map(b => {
         let score = 0, hits = 0;
@@ -250,6 +325,53 @@ function addBehaviorRecords(facts) {
         currentWorld.behavior_records = currentWorld.behavior_records.slice(-100);
     }
     scheduleSaveWorlds(); // D1: 节流，避免每轮全量写 localStorage
+}
+
+// ★ 常驻/常量记忆层（pinned facts）：一旦成立永不褪色的高承诺事实。
+// 与 behavior_records（滑动窗口 + RAG 召回）分离，独立全量无条件注入。
+function ensurePinnedFacts() {
+    if (!currentWorld) return null;
+    if (!currentWorld.pinned_facts) currentWorld.pinned_facts = [];
+    return currentWorld.pinned_facts;
+}
+
+function addPinnedFacts(facts, source) {
+    if (!currentWorld || !facts || !facts.length) return;
+    const list = ensurePinnedFacts();
+    if (!list) return;
+    for (const f of facts) {
+        if (!f || !f.trim()) continue;
+        const text = f.trim();
+        if (list.some(p => p.text === text && p.status === "active")) continue; // 仅对 active 去重
+        list.push({
+            id: "p" + (crypto.randomUUID ? crypto.randomUUID().slice(0, 8) : Date.now() + Math.random().toString(36).slice(2, 6)),
+            text,
+            pinnedAt: new Date().toISOString(),
+            status: "active",
+            source: source || "ai"
+        });
+    }
+    scheduleSaveWorlds();
+}
+
+function getPinnedFacts() {
+    if (!currentWorld || !currentWorld.pinned_facts) return [];
+    return currentWorld.pinned_facts.filter(p => p.status === "active").map(p => p.text);
+}
+
+function getAllPinnedFacts() {
+    if (!currentWorld || !currentWorld.pinned_facts) return [];
+    return currentWorld.pinned_facts;
+}
+
+function unpinFact(id) {
+    if (!currentWorld || !currentWorld.pinned_facts) return;
+    const p = currentWorld.pinned_facts.find(x => x.id === id);
+    if (p) {
+        p.status = "resolved";
+        p.resolvedAt = new Date().toISOString();
+        scheduleSaveWorlds();
+    }
 }
 
 function summarizeFactsFromChanges(input, narrative, changes) {
@@ -328,18 +450,17 @@ function buildSystemPrompt() {
 
     // ★ 主角硬约束：从 hero 描述 + gameState 构建，确保 AI 不遗忘/降级主角设定
     const heroContext = buildHeroContext();
-    // ★ 叙事基调：从世界观 + hero + 开场白自动推导基调类型
-    const toneGuide = buildToneGuide();
 
     let systemPrompt = fixedTemplate
         .replace(/{IP_NAME}/g, (currentWorld && currentWorld.name) || (kb && kb.ip) || "你的IP")
         .replace(/{HERO_CONTEXT}/g, heroContext)
-        .replace(/{TONE_GUIDE}/g, toneGuide)
+        .replace(/{TONE_GUIDE}/g, "# 叙事基调\n\n（叙事基调指引已迁移至每轮 User Message，以确保 System Prompt 前缀完全稳定、最大化 DeepSeek 缓存命中。）")
         .replace(/{WORLD_RULES}/g, finalWorldRules)
         .replace(/{WORLD_SCHEMA}/g, JSON.stringify(schema, null, 2))
         .replace(/{WORLD_FREEDOM}/g, worldFreedomHints[wf])
         .replace(/{TIME_MODE_RULES}/g, buildTimeModeRules())
         .replace(/{RULES_MODE_SECTION}/g, isNarrativeMode() ? NARRATIVE_RULES_BLOCK : TRPG_RULES_BLOCK)
+        .replace(/{ORACLE_SECTION}/g, buildOracleSection())
         .replace(/{NARRATIVE_QUALITY_SECTION}/g, buildNarrativeQualitySection());
 
     // ★ 核心知识库注入 system（固定，命中缓存）
@@ -398,6 +519,22 @@ function invalidateSystemPromptCache() {
     cachedSysPromptWorldId = null;
 }
 
+// ★ C1: 基调独立缓存——只在世界或 tone 变化时重建
+function getCachedToneGuide() {
+    const worldId = currentWorld && currentWorld.id;
+    if (cachedToneGuide !== null && worldId && worldId === cachedToneWorldId) {
+        return cachedToneGuide;
+    }
+    cachedToneGuide = resolveToneGuide(currentWorld);
+    cachedToneWorldId = worldId;
+    return cachedToneGuide;
+}
+
+function invalidateToneGuideCache() {
+    cachedToneGuide = null;
+    cachedToneWorldId = null;
+}
+
 function buildTimeModeRules() {
     const tc = getTimeConfig();
     if (tc.mode === "hidden") {
@@ -444,6 +581,26 @@ function buildTimeModeRules() {
 日期追踪：叙事中用"次日清晨""又过了一日"或"第N天"等自然表达，AI 根据剧情自行判断哪种更贴合当前叙事氛围。每个世界可有多于或少于5个时段，时段名称由世界设定决定。`;
 }
 
+// 预言机 / 混沌因子：按世界观可控（创建时选择是否启用 + 混沌因子 1-9）
+// 旧世界无 oracle 字段时默认启用、混沌因子 5（标准单人 TRPG 体验）
+function buildOracleSection() {
+    const o = (currentWorld && currentWorld.oracle) || { enabled: true, chaos_factor: 5 };
+    const enabled = o.enabled !== false;
+    const cf = (typeof o.chaos_factor === "number") ? Math.max(1, Math.min(9, o.chaos_factor)) : 5;
+    if (!enabled) {
+        return `# 预言机（已关闭 · 纯爽文模式）
+
+本世界为纯线性 / 爽文体验：**不要**主动制造意外挫折、随机 complication 或不可控转折。叙事跟随玩家意图平滑推进，玩家行动的结果应偏向可预期的正反馈，让玩家获得流畅的"爽感"。`;
+    }
+    return `# 预言机 / 随机事件（混沌因子 ${cf}/9）
+
+本世界启用「预言机」机制：故事中存在可控的意外变量，增强单人冒险的未知感与张力。
+- 混沌因子 ${cf}/9 决定意外出现的频率：数值越高，随机事件越频繁（1=极少意外，9=几乎每轮都有意外）。
+- 每轮系统可能触发一个「随机事件」提示（出现在每轮 user message 中）。触发时，请在当前情境下引入一个**合理的意外转折**——可以是新人物登场、意外发现、环境突变、信息差、小危机或小机遇（可好可坏），但必须与当下场景自洽、不破坏世界观硬约束。
+- 未触发时，按玩家意图平稳推进。
+- 意外服务于叙事张力，不应沦为恶意针对玩家的惩罚；也避免过度喧宾夺主，每次最多引入一个主线外的意外。`;
+}
+
 // 构建主角硬约束文本，注入 system prompt
 function buildHeroContext() {
     let hero = "";
@@ -465,58 +622,10 @@ function buildHeroContext() {
     return hero;
 }
 
-// 从世界观描述 + hero + opening_narrative 自动推导叙事基调
-function buildToneGuide() {
-    const clues = [
-        (currentWorld && currentWorld.desc) || "",
-        (currentWorld && currentWorld.hero) || "",
-        (currentWorld && currentWorld.opening_narrative) || ""
-    ].join(" ");
-
-    // 日常/生活系特征
-    const dailyWords = /日常|生活|校园|恋爱|甜|宠|治愈|温馨|轻松|慢|休闲|田园|种田|开店|经营|咖啡|烘焙|花|茶|猫|狗|宠物|恋爱|初恋|青梅|竹马|邻居|同桌|室友/;
-    // 高张力特征
-    const intenseWords = /战斗|战争|末日|生存|血|杀|死|猎|逃|追杀|阴谋|复仇|黑暗|残酷|深渊|炼狱|绝境|危|恐怖|惊悚|惨|破灭|崩坏/;
-    // 悬疑/推理特征
-    const mysteryWords = /悬疑|推理|侦探|谜|案|失踪|秘密|真相|调查|线索|诡异|怪谈|奇谭|探索/;
-    // 浪漫特征
-    const romanceWords = /恋爱|爱情|甜|宠|浪漫|心动|告白|暗恋|情|缘|婚|嫁|后|妃|宫斗|宅斗/;
-    // 修仙/武侠 → 混合向
-    const xianxiaWords = /仙|修|武|侠|道|魔|玄|真|灵|丹|气|剑|宗门/;
-    // 西方奇幻
-    const fantasyWords = /魔法|巫师|龙|精灵|骑士|王|城堡|冒险|勇者/;
-    // 红楼梦/古典
-    const classicalWords = /红楼|贾|黛|宝|钗|凤|府|园|宅|闺|诗|词|宴/;
-
-    let tones = [];
-
-    if (dailyWords.test(clues)) tones.push("日常");
-    if (romanceWords.test(clues)) tones.push("浪漫");
-    if (mysteryWords.test(clues)) tones.push("悬疑");
-    if (intenseWords.test(clues)) tones.push("高张力");
-
-    // 如果没有任何命中，根据题材推断
-    if (tones.length === 0) {
-        if (xianxiaWords.test(clues)) tones.push("高张力", "浪漫");
-        else if (fantasyWords.test(clues)) tones.push("高张力");
-        else if (classicalWords.test(clues)) tones.push("日常", "浪漫");
-        else tones.push("日常"); // 默认日常向，不制造无谓的紧迫感
-    }
-
-    const toneNames = [...new Set(tones)];
-    const toneStr = toneNames.map(t => `「${t}向」`).join(" + ");
-
-    const toneIndex = [
-        `叙事基调：${toneStr}。`,
-        "",
-        "请根据此基调调整叙事的紧张程度和信息密度：",
-        "- 日常向：以生活细节和人物互动为主，冲突来自日常生活（误会、小事、人际关系）。不要主动制造危机或生命威胁。闲暇和放松时刻是故事的重要组成部分，不要急着推进。",
-        "- 高张力向：保持适度的紧张感，但不是每一刻都要生死攸关。学会在战斗/阴谋的间隙插入喘息时刻，让读者和角色有情绪调节的空间。",
-        "- 悬疑向：线索碎片化释放，叙事克制。不要一次性揭示太多信息。保持好奇心驱动的节奏，而非恐惧驱动的节奏。",
-        "- 浪漫向：聚焦人物之间的微妙互动和情感变化。少靠外部事件推动剧情，多靠人物内心的波动。"
-    ];
-
-    return toneIndex.join("\n");
+// H) 基调显式持久化：buildToneGuide 现在委托给 app-core 的 resolveToneGuide，
+// 优先使用持久化的 world.tone（AI 显式定调），否则降级为文本推断（旧世界兼容）。
+function buildToneGuide(world) {
+    return resolveToneGuide(world || currentWorld);
 }
 
 // E9: 叙事质感指引——按题材差异化描写风格，把 AI 从"信息报告体"拉回"小说体"，提升沉浸感。
@@ -615,22 +724,25 @@ function isLoreFullInSystem() {
 // 从完整 gameState 中提取 AI 需要校准的运行时状态
 function buildCompactGameState() {
     if (!gameState) return "{}";
+    // ★ 瘦身: 移除已在 user message 单独区块注入的字段（relationships→NPC关系, npc_activity→NPC位置）
+    // 移除不会变化的大字段（background→system prompt中固定）
     const state = {
         name: gameState.name || (currentWorld && currentWorld.hero ? currentWorld.hero.slice(0, 20) : "主角"),
-        background: gameState.background || (currentWorld && currentWorld.hero ? currentWorld.hero : "未指定"),
         current_location: gameState.current_location,
         current_date: gameState.current_date,
         attributes: gameState.attributes,
         progression: gameState.progression,
-        relationships: gameState.relationships,
-        skills: gameState.skills,
         inventory: gameState.inventory,
         goals: gameState.goals,
         status_effects: gameState.status_effects,
-        npc_activity: gameState.npc_activity || {},
+        // NPC 数据不放入 JSON（已在 # NPC关系/# NPC位置/# NPC档案 区块单独注入）
         is_alive: gameState.is_alive,
         reputation: (typeof gameState.reputation === "number") ? gameState.reputation : 0,
         tension: (typeof gameState.tension === "number") ? gameState.tension : 0,
+        factions: gameState.factions || {},
+        currency: gameState.currency || { gold: 0 },
+        // 配方仅在非空时注入
+        crafting_recipes: (gameState.crafting_recipes && gameState.crafting_recipes.length) ? gameState.crafting_recipes.map(function(r) { return { id: r.id, name: r.name }; }) : void 0,
         combat_stats: (!isNarrativeMode() && gameState.combat_stats) ? {
             hp: gameState.combat_stats.hp, max_hp: gameState.combat_stats.max_hp,
             mp: gameState.combat_stats.mp, max_mp: gameState.combat_stats.max_mp,
@@ -647,7 +759,8 @@ function buildCompactGameState() {
             in_combat: gameState.combat_stats.in_combat || false
         } : {}
     };
-    return JSON.stringify(state);
+    // 过滤掉 undefined（避免 JSON 中的 null/undefined 浪费 token）
+    return JSON.stringify(state, function(k, v) { return v === void 0 ? undefined : v; });
 }
 
 // 构建本轮 user 消息（每轮动态，仅最新轮 miss）
@@ -659,10 +772,23 @@ function buildTurnUserMessage(input, retrieved) {
     const ambience = buildAmbienceHint(gameState && gameState.current_location, gameState && gameState.current_date && gameState.current_date.period, currentWorld);
     if (ambience) userPrompt += "# 此刻此地（环境锚点，可作描写引子）\n\n" + ambience + "\n\n";
 
+    // ★ C1: 叙事基调指引（每月首次或 tone 变化时重算缓存，其余复用）
+    // 从 system prompt 剥离至此，确保 system prefix 100% 稳定，最大化 DeepSeek 前缀缓存
+    const toneGuide = getCachedToneGuide();
+    if (toneGuide) userPrompt += toneGuide + "\n\n";
+
     // ★ 对话历史摘要：用精简的 1-2 句摘要替代被截断的完整对话，大幅降低 token 消耗
     if (chatSummary && chatSummary.length > 0) {
         userPrompt += "# 前情提要（之前发生的故事）\n\n";
         chatSummary.forEach((s, i) => { userPrompt += (i + 1) + ". " + s + "\n"; });
+        userPrompt += "\n";
+    }
+
+    // ★ 常驻/常量记忆：无条件全量注入，永不随滑动窗口褪色（誓言/诅咒/生死等）
+    const pinnedFacts = getPinnedFacts();
+    if (pinnedFacts.length) {
+        userPrompt += "# 恒定事实（无论如何不可违背、不可遗忘）\n\n";
+        pinnedFacts.forEach((f, i) => { userPrompt += (i + 1) + ". " + f + "\n"; });
         userPrompt += "\n";
     }
 
@@ -755,8 +881,37 @@ function buildTurnUserMessage(input, retrieved) {
     // P0: 紧凑游戏状态
     userPrompt += "# 当前游戏状态\n\n" + buildCompactGameState() + "\n\n";
 
+    // ★ 预言机 / 混沌因子：每轮按 chaos_factor/9 概率注入"随机事件触发"提示（关闭时整段跳过）
+    // 与 buildOracleSection 保持一致：oracle 字段缺失时默认启用、混沌因子 5（旧世界兼容）
+    const _o = currentWorld && currentWorld.oracle;
+    const _oracleOn = !_o || _o.enabled !== false;
+    if (_oracleOn) {
+        const cf = (_o && typeof _o.chaos_factor === "number") ? Math.max(1, Math.min(9, _o.chaos_factor)) : 5;
+        const triggered = Math.random() < (cf / 9);
+        userPrompt += "# 预言机（混沌因子 " + cf + "/9）\n";
+        if (triggered) {
+            userPrompt += "【本回合触发随机事件】：请在不脱离当前情境、不破坏世界观硬约束的前提下，引入一个合理的意外转折、人物、发现或 complication（可好可坏），让故事出现一条不可预测的支线。每次最多一个，服务于张力而非惩罚。\n\n";
+        } else {
+            userPrompt += "本回合不触发额外随机事件，叙事按玩家意图平稳推进。\n\n";
+        }
+    }
+
     // 玩家输入（每轮变化，放最后）
     userPrompt += "# 玩家输入\n\n" + input;
+
+    // ★ S1: 终局状态（死亡/胜利）不强制 choices，避免 AI 编造空洞选项
+    if (gameState && gameState.is_alive === false) {
+        userPrompt += "\n\n# 输出要求\n这是一个结局场景。请专注于为玩家的冒险写下有意义的终结叙事。choices 可以为空，或仅提供「结束冒险」等终局选项。";
+    } else {
+        // ★ 强制输出 choices：避免 AI 漏返回导致反复走保底、且选项雷同
+        userPrompt += "\n\n# 输出要求\n无论剧情平淡还是紧张，必须在 JSON 的 choices 数组中返回 2-4 个**彼此有差异、贴合当前情境**的行动选项（每项含 text 与 hint），供玩家选择或自行发挥。不得只返回 1 个或为空。";
+    }
+
+    // G2: 世界脉搏（world_pulse）——可选字段，让 AI 在主响应里顺带生成一条背景动态，省一次独立 API 调用
+    userPrompt += "\n\n# 可选：世界脉搏（world_pulse）\n若本回合世界背景里自然发生了一条无需玩家介入的动态（传闻/环境变化/势力动向/天气），可在 JSON 中返回 `world_pulse` 字段：{\"type\":\"rumor|env|faction|weather\",\"text\":\"动态内容（1-2句）\"}。不要推进主线、不要替玩家做决定。多数回合可不返回。";
+    if (currentWorld && typeof currentWorld._pulseCounter === "number" && currentWorld._pulseCounter >= 2) {
+        userPrompt += "\n\n【本回合请尽量返回 world_pulse：世界已有一段时间没有背景动态了，顺手生成一条即可。】";
+    }
 
     return userPrompt;
 }
@@ -770,11 +925,21 @@ function getRecentKeyFacts(count) {
 // 将一轮 user/assistant 推入多轮对话历史（仅在正常故事轮次调用，警告轮次跳过）
 function pushChatTurn(userContent, parsed) {
     chatHistory.push({ role: "user", content: userContent });
-    // assistant 存精简 JSON：仅保留 narrative + state_changes
-    const slim = {
-        narrative: parsed.narrative || "",
-        state_changes: parsed.state_changes || {}
-    };
+
+    // ★ 缓存命中优化: 近期消息用摘要，锚定消息用较完整叙事
+    // 锚定消息（前几轮）→ 命中原样缓存 → 内容长 OK（$0.07/M 便宜）
+    // 近期消息（最新几轮）→ 每轮必 miss → 内容越短越好（$0.27/M 贵）
+    const totalTurns = conversationHistory.filter(function(e) { return !e.isWarning; }).length + 1;
+    var narrativeContent;
+    if (totalTurns <= 4) {
+        // 前 4 轮将进入 trim 后的 anchor 窗口：保留较完整叙事（最多 300 字符）
+        narrativeContent = (parsed.narrative || "").slice(0, 300);
+    } else {
+        // 第 5 轮起将处于滑动窗口的 recent 段: 用摘要代替（1-2 句，省 ~200t/轮）
+        var sum = summarizeTurn(parsed);
+        narrativeContent = sum || (parsed.narrative || "").slice(0, 120);
+    }
+    const slim = { narrative: narrativeContent };
     chatHistory.push({ role: "assistant", content: JSON.stringify(slim) });
 
     // ★ 生成本轮摘要，追加到 chatSummary（每 5 轮冻结一次快照，中间保持不变以稳定缓存前缀）
@@ -793,13 +958,27 @@ function pushChatTurn(userContent, parsed) {
 function summarizeTurn(parsed) {
     const narrative = (parsed.narrative || "").trim();
     if (!narrative) return null;
-    // 取叙事文本的前 2 个句子（按中文句号/感叹号/问号/省略号分割）
-    const sentences = narrative.split(/[。！？…]/).filter(s => s.trim().length > 5);
+    // 按中文句号/感叹号/问号/省略号分割
+    const sentences = narrative.split(/[。！？…]/).filter(function(s) { return s.trim().length > 5; });
     if (!sentences.length) return narrative.slice(0, 80);
-    // 取第 1-2 句，拼接成摘要
-    const first = sentences[0].trim();
-    const second = sentences[1] ? sentences[1].trim() : "";
-    let result = first;
+
+    // ★ S4: 优先捕捉包含事件关键信号词的句子（动作/事件 > 环境描写）
+    // "来到""遇到""发现""决定""对XX说""战斗" 等更可能是本轮关键事件
+    var EVENT_SIGNALS = ["来到", "遇到", "发现", "决定", "突然", "开始", "进入", "选择", "成功", "失败", "击败", "倒下", "推开", "冲进", "答应", "拒绝", "离开"];
+    var bestIdx = -1;
+    for (var i = 0; i < sentences.length && i < 5; i++) {
+        var s = sentences[i].trim();
+        for (var j = 0; j < EVENT_SIGNALS.length; j++) {
+            if (s.indexOf(EVENT_SIGNALS[j]) !== -1) { bestIdx = i; break; }
+        }
+        if (bestIdx >= 0) break;
+    }
+
+    // 找到事件句 → 用它 + 下一句；没找到 → 回退取前 2 句
+    var first = sentences[bestIdx >= 0 ? bestIdx : 0].trim();
+    var secondIdx = bestIdx >= 0 ? bestIdx + 1 : 1;
+    var second = sentences[secondIdx] ? sentences[secondIdx].trim() : "";
+    var result = first;
     if (second && (first + second).length < 120) result += second;
     if (parsed.state_changes && parsed.state_changes.current_location) {
         result += "（地点变更为" + parsed.state_changes.current_location + "）";
@@ -865,6 +1044,10 @@ async function callLLM(input, retrieved) {
         { role: "user", content: userContent }
     ];
 
+    // ★ U1: 创建本次请求的 AbortController（全局共享，供取消按钮触发）
+    _llmAbortController = new AbortController();
+    _llmCancelRequested = false;
+
     let parsed;
     if (mock) {
         parsed = mockLLM(input, retrieved);
@@ -874,25 +1057,55 @@ async function callLLM(input, retrieved) {
         const apiKey = document.getElementById("apiKey").value.trim();
         const model = document.getElementById("modelName").value.trim();
         if (!baseUrl || !apiKey || !model) {
+            _llmAbortController = null;
             throw new Error("请填写 Base URL、API Key 和模型名称，或开启模拟模式。");
         }
         const url = buildApiUrl(baseUrl, corsProxy);
         const useStream = !document.getElementById("noStreamMode") || !document.getElementById("noStreamMode").checked;
 
-        try {
-            parsed = useStream
-                ? await callLLMStreaming(url, apiKey, model, messages)
-                : await callLLMNonStreaming(url, apiKey, model, messages);
-        } catch (streamErr) {
-            // 流式失败（如 CORS 代理不支持），自动降级为非流式
-            if (useStream) {
-                console.warn("Streaming failed, falling back to non-streaming:", streamErr.message);
-                parsed = await callLLMNonStreaming(url, apiKey, model, messages);
-            } else {
-                throw streamErr;
+        // ★ U6: 网络重试——最多 3 次（含首次），指数退避 1s→2s
+        // 仅对网络/超时可恢复错误重试；配置错误/用户取消立即抛出
+        var MAX_RETRIES = 3;
+        var lastErr = null;
+        for (var attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+            try {
+                if (attempt > 1) {
+                    // 保存输入到 sessionStorage 防丢失
+                    try { sessionStorage.setItem("octo_last_input", input); } catch(e) {}
+                    var delay = Math.pow(2, attempt - 2) * 1000;
+                    showToast("网络请求失败，正在重试 (" + attempt + "/" + MAX_RETRIES + ")...", "info", delay);
+                    await new Promise(function(r) { setTimeout(r, delay); });
+                }
+                parsed = useStream
+                    ? await callLLMStreaming(url, apiKey, model, messages)
+                    : await callLLMNonStreaming(url, apiKey, model, messages);
+                break; // 成功 → 退出重试循环
+            } catch (streamErr) {
+                if (_llmCancelRequested) {
+                    _llmAbortController = null;
+                    throw new Error("CANCELLED_BY_USER");
+                }
+                lastErr = streamErr;
+                var isTransient = streamErr.message && (
+                    streamErr.message.indexOf("超时") !== -1 || streamErr.message.indexOf("Failed to fetch") !== -1 ||
+                    streamErr.message.indexOf("NetworkError") !== -1 || streamErr.message.indexOf("Timeout") !== -1);
+                // 流式失败→降级非流式（仅首次尝试）
+                if (useStream && attempt === 1) {
+                    console.warn("Streaming failed, falling back to non-streaming:", streamErr.message);
+                    try {
+                        parsed = await callLLMNonStreaming(url, apiKey, model, messages);
+                        break;
+                    } catch (e2) {
+                        if (_llmCancelRequested) { _llmAbortController = null; throw new Error("CANCELLED_BY_USER"); }
+                        lastErr = e2;
+                        isTransient = e2.message && (e2.message.indexOf("超时") !== -1 || e2.message.indexOf("Failed to fetch") !== -1);
+                    }
+                }
+                if (!isTransient || attempt >= MAX_RETRIES) throw lastErr;
             }
         }
     }
+    _llmAbortController = null;
     parsed._turnUserContent = userContent;
     return parsed;
 }
@@ -939,7 +1152,7 @@ ${events || "（暂无）"}
         if (!ev || !ev.text) return;
         if (!currentWorld.current_world_events) currentWorld.current_world_events = [];
         currentWorld.current_world_events.push({
-            id: "we_" + Date.now().toString(36),
+            id: "we_" + (typeof genId === "function" ? genId("").slice(0, 16) : Date.now().toString(36)),
             day: gameState.current_date.day,
             period: gameState.current_date.period,
             type: ev.type,
@@ -955,8 +1168,9 @@ ${events || "（暂无）"}
 }
 
 async function callLLMNonStreaming(url, apiKey, model, messages) {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 60000);
+    // ★ U1: 使用共享 AbortController（callLLM 创建），支持外部取消
+    const controller = _llmAbortController;
+    const timeoutId = setTimeout(() => { _llmCancelRequested = true; if (controller) controller.abort(); }, 60000);
     try {
         const res = await fetch(url, {
             method: "POST",
@@ -971,7 +1185,7 @@ async function callLLMNonStreaming(url, apiKey, model, messages) {
                 thinking: { type: "disabled" },
                 response_format: { type: "json_object" }
             }),
-            signal: controller.signal
+            signal: controller ? controller.signal : undefined
         });
         clearTimeout(timeoutId);
     if (!res.ok) {
@@ -997,14 +1211,16 @@ async function callLLMNonStreaming(url, apiKey, model, messages) {
     return parsed;
     } catch (e) {
         clearTimeout(timeoutId);
+        if (_llmCancelRequested) throw new Error("CANCELLED_BY_USER");
         if (e.name === "AbortError") throw new Error("请求超时（60秒），请检查网络或 API 配置");
         throw e;
     }
 }
 
 async function callLLMStreaming(url, apiKey, model, messages) {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 60000);
+    // ★ U1: 使用共享 AbortController（callLLM 创建），支持外部取消
+    const controller = _llmAbortController;
+    const timeoutId = setTimeout(() => { _llmCancelRequested = true; if (controller) controller.abort(); }, 60000);
     try {
     const res = await fetch(url, {
         method: "POST",
@@ -1021,7 +1237,7 @@ async function callLLMStreaming(url, apiKey, model, messages) {
             stream_options: { include_usage: true },
             response_format: { type: "json_object" }
         }),
-        signal: controller.signal
+        signal: controller ? controller.signal : undefined
     });
     clearTimeout(timeoutId);
     if (!res.ok) {
@@ -1035,6 +1251,11 @@ async function callLLMStreaming(url, apiKey, model, messages) {
     let usage = null;
 
     while (true) {
+        // ★ U1: 流式读取中也检查用户取消
+        if (_llmCancelRequested) {
+            reader.cancel();
+            throw new Error("CANCELLED_BY_USER");
+        }
         const { done, value } = await reader.read();
         if (done) break;
 
@@ -1076,9 +1297,40 @@ async function callLLMStreaming(url, apiKey, model, messages) {
     }
     return parsed;
     } catch (e) {
+        clearTimeout(timeoutId);
+        if (_llmCancelRequested) throw new Error("CANCELLED_BY_USER");
         if (e.name === "AbortError") throw new Error("请求超时（60秒），请检查网络或 API 配置");
         throw e;
     }
+}
+
+// ★ C5: 每轮缓存命中数据写日志 + 更新最后一条 debugLog turn
+function logTurnStats(hit, miss, total, usage) {
+    var turns = (typeof debugLog !== "undefined" && debugLog.turns) ? debugLog.turns : null;
+    if (!turns || !turns.length) return;
+    var last = turns[turns.length - 1];
+    last.cacheHitTokens = hit;
+    last.cacheMissTokens = miss;
+    last.inputTokens = total;
+    last.outputTokens = (usage && usage.completion_tokens) || 0;
+    last.totalTokens = (usage && usage.total_tokens) || 0;
+    last.hitRate = total > 0 ? (hit / total * 100).toFixed(1) + "%" : "0%";
+    last.status = "ok";
+    // 记录延迟（从 processTurn 入口的时间戳推算）
+    if (last._startTime) {
+        last.latencyMs = Date.now() - last._startTime;
+    }
+}
+
+// ★ U1: 取消正在进行的 AI 请求（由 UI 取消按钮触发）
+function cancelLLMRequest() {
+    _llmCancelRequested = true;
+    if (_llmAbortController) {
+        try { _llmAbortController.abort(); } catch (e) { /* 忽略已中止的错误 */ }
+    }
+    // UI 清理：隐藏加载动画
+    if (typeof hideLoading === "function") hideLoading();
+    if (typeof showToast === "function") showToast("正在取消...", "info");
 }
 
 function parseResponse(content) {
@@ -1100,6 +1352,151 @@ function parseResponse(content) {
             throw new Error("AI 返回的 JSON 解析失败：" + e2.message + "\n原始内容：" + content.slice(0, 500));
         }
     }
+}
+
+/* ================= 一键导入 IP 设定：抽取 LLM ================= */
+// 长文分块抽取参数
+const LORE_CHUNK_SIZE = 9000;      // 单块最大字符数（低于此值整篇一次抽取）
+const LORE_CHUNK_OVERLAP = 1500;   // 块间重叠，避免实体被边界切断
+const LORE_MAX_CHUNKS = 12;        // 最多分块数，防止超长文耗爆 API
+
+/**
+ * 将长文本切成有重叠的块，优先在段落/换行边界切分以保持语义连贯。
+ * @returns {string[]}
+ */
+function splitLoreChunks(text, chunkSize, overlap) {
+    const clean = (text || "").replace(/\r\n/g, "\n");
+    chunkSize = chunkSize || LORE_CHUNK_SIZE;
+    // 重叠量不可超过单块 1/3，否则 end-overlap 会退回 start 之前导致步长退化为 1 字符
+    const effOverlap = Math.min(overlap || LORE_CHUNK_OVERLAP, Math.floor(chunkSize / 3));
+    if (clean.length <= chunkSize) return [clean];
+    const chunks = [];
+    let start = 0;
+    while (start < clean.length) {
+        let end = Math.min(start + chunkSize, clean.length);
+        if (end < clean.length) {
+            // 尽量在段落/换行边界切，避免句子被斩断
+            const slice = clean.slice(start, end);
+            const pBreak = slice.lastIndexOf("\n\n");
+            const nBreak = slice.lastIndexOf("\n");
+            const boundary = pBreak > chunkSize * 0.5 ? pBreak : (nBreak > chunkSize * 0.5 ? nBreak : -1);
+            if (boundary > 0) end = start + boundary;
+        }
+        const piece = clean.slice(start, end).trim();
+        if (piece) chunks.push(piece);
+        if (end >= clean.length) break;
+        start = Math.max(end - effOverlap, start + 1);
+    }
+    return chunks;
+}
+
+/**
+ * 从原著/世界观文本抽取结构化设定片段（人物/势力/地点/事件/规则等）。
+ * 与 callWorldGenerationLLM 的区别：它「生成整世界」，本函数只「抽取并挂载知识」。
+ * 长文自动分块：每块独立抽取后按 title 去重合并，避免一次性超长截断丢失设定。
+ * @param {string} text 原著/世界观原文
+ * @param {string} worldName 世界名称（仅用于提示 AI）
+ * @param {Object} [opts] {chunkSize, maxChunks} 调试用
+ * @returns {Promise<Array>} snippets 数组 [{category,title,content,keywords}]
+ */
+async function extractLoreFromText(text, worldName, opts) {
+    if (!text || !text.trim()) return [];
+    const chunkSize = (opts && opts.chunkSize) || LORE_CHUNK_SIZE;
+    const maxChunks = (opts && opts.maxChunks) || LORE_MAX_CHUNKS;
+    const mockEl = document.getElementById("mockMode");
+    const mock = mockEl && mockEl.checked;
+
+    const chunks = splitLoreChunks(text, chunkSize, LORE_CHUNK_OVERLAP);
+    if (chunks.length <= 1) {
+        // 短文本：维持原单次路径（含模拟模式与真实 fetch）
+        if (mock) return mockExtractLore(text, worldName);
+        return extractOneChunk(text, worldName, 1, 1);
+    }
+
+    // 长文：逐块抽取 + 去重合并
+    let all = [];
+    const n = Math.min(chunks.length, maxChunks);
+    for (let i = 0; i < n; i++) {
+        const chunk = chunks[i];
+        const snips = mock
+            ? mockExtractLore(chunk, worldName)
+            : await extractOneChunk(chunk, worldName, i + 1, n);
+        all = mergeLoreSnippets(all, snips);
+        // 长文进度反馈（UI 可选，缺失则忽略）
+        const status = document.getElementById("importLoreStatus");
+        if (status && !mock) status.textContent = "正在抽取设定…（第 " + (i + 1) + "/" + n + " 块）";
+    }
+    return all;
+}
+
+/**
+ * 对单块文本做真实 LLM 抽取（与旧单次路径一致，但 prompt 标注块序号）。
+ */
+async function extractOneChunk(chunk, worldName, idx, total) {
+    const baseUrl = (document.getElementById("baseUrl") || {}).value || "";
+    const corsProxy = (document.getElementById("corsProxy") || {}).value || "";
+    const apiKey = (document.getElementById("apiKey") || {}).value || "";
+    const model = (document.getElementById("modelName") || {}).value || "";
+    if (!baseUrl || !apiKey || !model) {
+        throw new Error("请填写 Base URL、API Key 和模型名称，或开启模拟模式。");
+    }
+    const prompt = buildLoreExtractPrompt(chunk, worldName, idx, total);
+    const url = buildApiUrl(baseUrl, corsProxy);
+    const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + apiKey },
+        body: JSON.stringify({
+            model,
+            messages: [{ role: "system", content: prompt }],
+            temperature: 0.3,
+            response_format: { type: "json_object" }
+        })
+    });
+    if (!res.ok) { const t = await res.text(); throw new Error("HTTP " + res.status + ": " + t); }
+    const data = await res.json();
+    const content = data?.choices?.[0]?.message?.content;
+    if (!content) throw new Error("API 返回异常：无法获取响应内容");
+    const parsed = parseResponse(content);
+    const snips = (parsed && Array.isArray(parsed.snippets)) ? parsed.snippets
+                : (Array.isArray(parsed) ? parsed : []);
+    return snips;
+}
+
+function buildLoreExtractPrompt(text, worldName, idx, total) {
+    const clip = text.length > LORE_CHUNK_SIZE ? text.slice(0, LORE_CHUNK_SIZE) : text;
+    const partLabel = (idx && total && total > 1)
+        ? "\n# 当前分段\n这是原文的第 " + idx + "/" + total + " 段（长文已分块抽取，每段独立抽取后合并去重，请勿编造其他段落内容）。\n"
+        : "";
+    const minMax = (idx && total && total > 1)
+        ? "至少 4 条，最多 20 条，只抽取本段明确出现的设定"
+        : "至少 8 条，最多 30 条，尽量覆盖人物、地点、势力、关键事件四类";
+    return `你是一名严谨的世界观考据助手。下面是一段原著/世界观文本，请从中抽取结构化设定片段，用于约束 AI 文字游戏的叙事一致性。
+${partLabel}
+# 要求
+- 类别从以下选择（可多选）：背景、事件、人物、势力、冲突、规则、地点、物品、原文。
+- 每条片段包含四个字段：category（类别）、title（简短标题）、content（100-300 字设定描述）、keywords（3-8 个关键词数组，用于检索命中）。
+- 只抽取文本中明确出现的设定，不要臆造；若原文含可直接引用的名句/诗词，归入「原文」类。
+- 输出严格 JSON：{ "snippets": [ { "category": "...", "title": "...", "content": "...", "keywords": ["...","..."] } ] }
+- ${minMax}。
+
+# 世界名称
+${worldName || "未命名世界"}
+
+# 原著 / 世界观文本
+\`\`\`
+${clip}
+\`\`\``;
+}
+
+function mockExtractLore(text, worldName) {
+    const head = (text || "").replace(/\s+/g, " ").slice(0, 40);
+    return [
+        { category: "背景", title: (worldName || "世界") + "·世界观概览", content: "（模拟）从原文抽取的世界观概述：「" + head + (head.length >= 40 ? "..." : "") + "」。此世界遵循原著基本设定，关键走向不可篡改。", keywords: [(worldName || "世界"), "概览", "设定"] },
+        { category: "人物", title: "（模拟）核心人物", content: "（模拟）原文中出现的代表性人物，其性格、立场与人物关系需符合原著，AI 叙事不得偏离。", keywords: ["人物", "主角", "关系"] },
+        { category: "势力", title: "（模拟）主要势力", content: "（模拟）原文中对立或联合的阵营/组织，其目标与冲突驱动主线剧情。", keywords: ["势力", "阵营", "冲突"] },
+        { category: "事件", title: "（模拟）关键事件", content: "（模拟）原文标志性事件，作为叙事锚点与转折点，玩家行动可影响细节但核心不可逆。", keywords: ["事件", "转折", "节点"] },
+        { category: "规则", title: "（模拟）力量/规则体系", content: "（模拟）原著的设定法则与禁忌，AI 叙事不得违背，可作为 canon 锁。", keywords: ["规则", "设定", "禁忌"] }
+    ];
 }
 
 // 自动补全截断的 JSON：闭合缺失的 }、]、"
@@ -1235,14 +1632,19 @@ function isNonStoryResponse(text) {
         "涉及敏感", "敏感内容"
     ];
 
+    // ★ S2: 弱信号仅在文本首段（前 150 字符）中检测
+    // 真正的拒绝响应开头就是"抱歉/无法"；叙事中段出现这些词（如对话、心理描写）不应误判
+    const firstPara = text.length > 150 ? text.slice(0, 150) : text;
+    const firstParaLower = firstPara.toLowerCase();
+
     let weakHits = 0;
     for (const p of weakPatterns) {
-        if (lower.includes(p.toLowerCase())) weakHits++;
+        if (firstParaLower.includes(p.toLowerCase())) weakHits++;
     }
 
     // 短文本 + 弱信号 → 判定为非故事
     if (text.length < 80 && weakHits >= 1) return true;
-    // 长文本但命中多个弱信号
+    // 长文本但首段命中多个弱信号（拒绝响应通常集中在开头）
     if (weakHits >= 3) return true;
 
     // 内容过短且不包含中文（可能是纯英文错误/技术限制消息）

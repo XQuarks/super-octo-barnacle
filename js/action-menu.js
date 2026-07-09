@@ -16,7 +16,9 @@ window.ActionMenu = (function() {
     talk:     { label: '交谈', icon: '\uD83D\uDCAC', needTarget: false, combatOnly: false },
     use_item: { label: '物品', icon: '\uD83C\uDF92', needTarget: false, combatOnly: false },
     move:     { label: '移动', icon: '\uD83C\uDFC3', needTarget: false, combatOnly: false },
-    rest:     { label: '休息', icon: '\uD83D\uDCA4', needTarget: false, combatOnly: false }
+    rest:     { label: '休息', icon: '\uD83D\uDCA4', needTarget: false, combatOnly: false },
+    trade:    { label: '交易', icon: '\uD83D\uDCB0', needTarget: false, combatOnly: false },
+    craft:    { label: '合成', icon: '\uD83D\uDD28', needTarget: false, combatOnly: false }
   };
 
   /**
@@ -35,6 +37,8 @@ window.ActionMenu = (function() {
     if (check.success) {
       var dmgRoll = Dice.roll('1d8');
       damage = dmgRoll.total + strMod;
+      // ★ ⑤ 已装备武器提供额外伤害加成
+      if (typeof getWeaponDamageBonus === "function") damage += getWeaponDamageBonus(gameState);
       damage = Math.max(1, damage);
     }
     return {
@@ -98,6 +102,20 @@ window.ActionMenu = (function() {
   }
 
   /**
+   * 交易 / 购买：不掷骰，仅把「交易意图」交给 AI，由 AI 通过 inventory + currency 完成实际交易
+   */
+  function resolveTrade(gameState) {
+    return { actionType: 'trade', rulesResult: {} };
+  }
+
+  /**
+   * 合成 / 制作：不掷骰，仅把「制作意图」交给 AI，由 AI 在叙事中引导或直接通过合成工坊完成
+   */
+  function resolveCraft(gameState) {
+    return { actionType: 'craft', rulesResult: {} };
+  }
+
+  /**
    * 技能检定（通用）
    */
   function resolveSkillCheck(gameState, skillName, attrKey, dc) {
@@ -107,13 +125,15 @@ window.ActionMenu = (function() {
       actionType: 'skill_check',
       rulesResult: {
         skillName: skillName,
+        attrKey: attrKey,
         dc: dc,
         roll: check.roll,
         modifier: mod,
         total: check.total,
         success: check.success,
         nat1: check.nat1,
-        nat20: check.nat20
+        nat20: check.nat20,
+        degree: check.degree
       }
     };
   }
@@ -125,10 +145,12 @@ window.ActionMenu = (function() {
     switch (actionType) {
       case 'attack': return '用长剑攻击敌人';
       case 'cast':   return '施放魔法攻击敌人';
-      case 'talk':   return '尝试与在场的人交谈';
-      case 'use_item': return '使用背包中的物品';
-      case 'move':   return '向新的方向探索前进';
+      case 'talk':   return '尝试用话术说服/打动对方';
+      case 'use_item': return '尝试用巧手使用/摆弄手头物品';
+      case 'move':   return '尝试灵巧地移动、潜行或越过障碍';
       case 'rest':   return '原地稍作休息';
+      case 'trade':  return '尝试与面前的商人或店铺交易，购买、出售或议价所需物品';
+      case 'craft':  return '尝试动手制作或锻造某样东西，运用手头已有的材料';
       default: return '';
     }
   }
@@ -158,6 +180,16 @@ window.ActionMenu = (function() {
       case 'rest':
         report = '休息：恢复 HP ' + r.healAmount + ' 点，恢复 MP ' + r.mpAmount + ' 点';
         break;
+      case 'skill_check':
+        var ATTR_LABELS = { strength: 'STR', dexterity: 'DEX', constitution: 'CON', intelligence: 'INT', wisdom: 'WIS', charisma: 'CHA' };
+        var attrLabel = ATTR_LABELS[r.attrKey] || r.attrKey || '属性';
+        report = 'D20 ' + r.skillName + '检定：d20(' + r.roll + ') + ' + attrLabel + '调整值(' + r.modifier + ') = ' + r.total + '\n';
+        report += '对抗 DC ' + r.dc + '... ' + (r.success ? '成功！' : '失败！') + '\n';
+        if (r.nat20) report += '大成功！远超预期的效果！';
+        else if (r.nat1) report += '大失败！弄巧成拙，可能引发尴尬或麻烦！';
+        else if (r.success) report += '（检定等级：' + (r.degree >= 5 ? '卓越' : r.degree >= 0 ? '勉强达成' : '险过') + '）';
+        else report += '（差 ' + (-r.degree) + ' 点未达成）';
+        break;
       default:
         report = '';
     }
@@ -173,6 +205,13 @@ window.ActionMenu = (function() {
       case 'attack': result = resolveAttack(gameState); break;
       case 'cast':   result = resolveCast(gameState); break;
       case 'rest':   result = resolveRest(gameState); break;
+      // ★ ⑤ 交易 / 合成：仅作意图提示，实际经济行为由 AI + inventory/currency 完成
+      case 'trade':  result = resolveTrade(gameState); break;
+      case 'craft':  result = resolveCraft(gameState); break;
+      // ★ 非战斗技能检定（跑团核心）：交谈/物品/移动也掷骰，让"不确定结果的行动"成立
+      case 'talk':     result = resolveSkillCheck(gameState, '说服', 'charisma', 13); break;
+      case 'use_item': result = resolveSkillCheck(gameState, '巧手', 'dexterity', 13); break;
+      case 'move':     result = resolveSkillCheck(gameState, '体操', 'dexterity', 12); break;
       default: result = { actionType: actionType, rulesResult: {} };
     }
 
@@ -247,7 +286,7 @@ window.ActionMenu = (function() {
     });
   }
 
-  function handleActionClick(actionType) {
+  function handleActionClick(actionType, targetId) {
     var gs = window.gameState;
     var inCombat = gs && gs.combat_stats && gs.combat_stats.in_combat;
 
@@ -259,6 +298,8 @@ window.ActionMenu = (function() {
         inputEl.value = actionLabels[actionType] || '';
         // 存储动作类型，processTurn 中 CombatEngine 会处理
         inputEl.setAttribute('data-action-type', actionType);
+        // ★ 地图点击敌人发起攻击时传入指定目标 id
+        if (targetId) inputEl.setAttribute('data-action-target', targetId);
         if (typeof window.submitInput === 'function') {
           window.submitInput();
         }
@@ -324,6 +365,7 @@ window.ActionMenu = (function() {
     setOnAction: setOnAction,
     getStoredResult: getStoredResult,
     buildActionReport: buildActionReport,
+    handleActionClick: handleActionClick,
     ACTION_TYPES: ACTION_TYPES
   };
 })();

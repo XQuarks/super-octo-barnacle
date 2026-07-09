@@ -47,7 +47,7 @@ window.CombatEngine = (function() {
     var hp = Math.max(3, (data.base_hp || 8) + hpVar + (levelBracket - 1) * 2);
 
     return {
-      id: 'enemy_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+      id: 'enemy_' + (typeof genId === "function" ? genId("").slice(0, 16) : Date.now() + '_' + Math.random().toString(36).slice(2, 8)),
       name: data.name || '怪物',
       hp: hp,
       maxHp: hp,

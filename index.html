@@ -293,7 +293,7 @@
         .wc-type.type-original { background: rgba(107,164,212,0.15); color: #6BA4D4; }
         .wc-desc { font-size: 12px; color: var(--text-secondary); line-height: 1.5; }
         .wc-tags { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
-        .wc-actions { position: absolute; top: 12px; right: 14px; }
+        .wc-actions { margin-top: 10px; display: flex; justify-content: flex-end; }
         .wc-delete { font-size: 10px; padding: 3px 8px; border: 1px solid var(--card-border); border-radius: 10px; background: none; color: var(--text-tertiary); cursor: pointer; transition: all 0.15s; }
         .wc-delete:hover { border-color: var(--danger); color: var(--danger); }
         .list-item {
@@ -319,6 +319,7 @@
         .list-item .item-meta { font-size: 12px; color: var(--text-secondary); line-height: 1.4; }
         .list-item .item-tags { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
         .list-item.dead-save { border-color: rgba(226, 75, 74, 0.3); background: rgba(226, 75, 74, 0.05); }
+        .save-item .item-hero { font-size: 12px; color: var(--primary-light); margin-top: 4px; line-height: 1.4; }
         .save-item {
             display: flex; align-items: center; justify-content: space-between; gap: 12px;
         }
@@ -379,6 +380,7 @@
         }
         .tag.primary { background: rgba(201, 168, 124, 0.12); color: var(--primary); }
         .tag.accent { background: rgba(201, 168, 124, 0.08); color: var(--primary-light); }
+        .tag.tone { background: rgba(120, 170, 220, 0.16); color: #6fa8dc; border: 1px solid rgba(120, 170, 220, 0.3); }
 
         /* 弹窗 */
         .modal-overlay {
@@ -774,6 +776,46 @@
         .placeholder-icon { font-size: 32px; opacity: 0.4; }
         .placeholder-text { font-size: 13px; opacity: 0.5; }
 
+        /* === 场景展示卡（游玩时激活顶部面板） === */
+        .scene-panel {
+            display: flex;
+            height: 100%;
+            padding: 14px 18px;
+            box-sizing: border-box;
+            overflow: auto;
+        }
+        .scene-card {
+            width: 100%;
+            background: rgba(255,255,255,0.03);
+            border: 1px solid var(--separator);
+            border-radius: 10px;
+            padding: 14px 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .scene-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            font-size: 15px;
+        }
+        .scene-loc { font-weight: 600; color: var(--text-primary); }
+        .scene-time { font-size: 12px; color: var(--text-tertiary); }
+        .scene-amb { font-size: 13px; line-height: 1.7; color: var(--text-secondary); }
+        .scene-pulse {
+            font-size: 13px; line-height: 1.6; color: var(--text-secondary);
+            background: rgba(255,255,255,0.04); border-left: 3px solid var(--primary);
+            padding: 6px 10px; border-radius: 4px;
+        }
+        .scene-npc { font-size: 12px; color: var(--text-tertiary); }
+
+        /* === 创建世界弹窗：合并后的底部导航 === */
+        .cw-footer { flex-direction: column; gap: 10px; }
+        .cw-footer-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; }
+        .cw-footer-nav { display: flex; align-items: center; gap: 10px; }
+        .cw-tab-indicator { font-size: 12px; color: var(--text-tertiary); min-width: 30px; text-align: center; }
+
         /* === 拖拽分隔线 === */
         .panel-divider {
             flex: none;
@@ -880,9 +922,13 @@
         }
         .game-input-area {
             padding: 10px 16px 20px;
+            padding-bottom: max(20px, env(safe-area-inset-bottom, 14px));
             background: var(--bg-panel);
             border-top: 1px solid var(--separator);
             flex: none;
+            position: sticky;
+            bottom: 0;
+            z-index: 10;
         }
         .choices-row {
             display: flex;
@@ -908,6 +954,16 @@
         }
         .loading-text { flex: 1; }
         .loading-time { color: var(--text-tertiary); font-size: 11px; }
+        .loading-cancel-btn {
+            margin-left: auto; padding: 3px 10px; font-size: 11px;
+            border: 1px solid var(--card-border); border-radius: 4px;
+            background: transparent; color: var(--text-muted); cursor: pointer;
+            transition: all 0.15s;
+        }
+        .loading-cancel-btn:hover {
+            background: var(--danger-light, #fee2e2); color: var(--danger, #dc2626);
+            border-color: var(--danger, #dc2626);
+        }
         .choice-chip {
             white-space: nowrap;
             padding: 10px 16px;
@@ -1116,6 +1172,34 @@
             border: 1px solid var(--card-border);
             color: var(--text-secondary);
         }
+        /* 折叠区：把次要/冗长信息收起，缓解状态面板信息过载（需求4 UI 重构） */
+        .status-details {
+            margin-bottom: 14px;
+            border: 1px solid var(--card-border);
+            border-radius: var(--radius-m);
+            background: var(--card);
+            padding: 8px 12px;
+        }
+        .status-details > summary {
+            cursor: pointer;
+            list-style: none;
+            font-size: 12px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            padding: 2px 0;
+            user-select: none;
+        }
+        .status-details > summary::-webkit-details-marker { display: none; }
+        .status-details > summary::before {
+            content: "▸";
+            display: inline-block;
+            margin-right: 6px;
+            color: var(--text-muted);
+            transition: transform 0.15s ease;
+        }
+        .status-details[open] > summary::before { transform: rotate(90deg); }
+        .status-details > summary:hover { color: var(--text); }
+        .status-details .status-card { border: none; padding: 12px 0 4px; margin-bottom: 0; background: transparent; }
         .goal-item {
             font-size: 13px;
             padding: 10px 14px;
@@ -1284,7 +1368,7 @@
             .game-top-panel { flex: 0 0 35%; min-height: 100px; }
             .game-bottom-panel { min-height: 180px; }
             .game-log { padding: 8px 12px; }
-            .game-input-area { padding: 6px 10px 14px; }
+            .game-input-area { padding: 6px 10px; padding-bottom: max(14px, env(safe-area-inset-bottom, 10px)); }
             .log-entry { padding: 12px 14px; }
             .status-content { padding: 12px; }
             .status-panel { max-width: 100%; }
@@ -1436,6 +1520,7 @@
         </div>
         <div class="header-actions">
             <button onclick="showStatusPanel()">角色</button>
+            <button onclick="openHeroEdit()" title="设定 / 修改你的主角身份与背景">编辑主角</button>
             <button onclick="toggleTheme()" id="gameThemeToggle" title="切换白天/夜间模式" style="display:flex;align-items:center;gap:3px;">
                 <svg class="theme-icon-sun" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
                 <svg class="theme-icon-moon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
@@ -1460,6 +1545,7 @@
                 <div class="enemy-list" id="enemyList"></div>
                 <div class="combat-input-hint" id="combatHint">选择行动或输入指令</div>
             </div>
+            <div class="scene-panel" id="scenePanel" style="display:none;"></div>
             <div class="top-panel-placeholder" id="topPanelPlaceholder">
                 <div class="placeholder-icon">&#x2302;</div>
                 <div class="placeholder-text">探索世界，发现场景</div>
@@ -1479,6 +1565,7 @@
                     <span class="loading-dot"></span>
                     <span class="loading-text">正在思考...</span>
                     <span class="loading-time">0.0s</span>
+                    <button class="loading-cancel-btn" id="loadingCancelBtn" onclick="cancelLLMRequest()" title="取消请求">✕ 取消</button>
                 </div>
                 <div class="action-menu" id="actionMenu"></div>
                 <div class="input-row">
@@ -1590,10 +1677,6 @@
                     <div class="hint" id="worldDescHint">描述越详细，AI 生成的剧情越贴合你的构想。</div>
                 </div>
                 <div class="form-group">
-                    <label>主角设定（可选）</label>
-                    <textarea id="heroDesc" placeholder="例如：一名来自小镇的少年，性格谨慎，渴望变强..."></textarea>
-                </div>
-                <div class="form-group">
                     <label>角色叙事锚点（执念 / 秘密 / 禁忌，可选）</label>
                     <textarea id="narrativeAnchors" placeholder="例如：执念——找回失踪的妹妹；秘密——其实出身于被灭的世家；禁忌——绝不能提起故乡"></textarea>
                     <div class="hint">这些锚点会让 NPC 在后续互动中记住并引用你，强化代入感。纯叙事模式尤其推荐填写。</div>
@@ -1643,6 +1726,30 @@
                             <span>轻规则（叙事主导）</span>
                         </div>
                     </div>
+                </div>
+
+                <div class="form-group">
+                    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                        <input type="checkbox" id="oracleEnabled" checked style="width:auto;" onchange="document.getElementById('chaosFactorRow').style.display=this.checked?'block':'none'">
+                        启用预言机 / 随机事件（意外变量）
+                    </label>
+                    <div class="hint">关闭即为「纯爽文」体验：不制造意外挫折或随机转折，叙事跟随玩家意图平滑推进。开启后可用下方混沌因子调节意外频率。</div>
+                    <div id="chaosFactorRow" class="range-slider-wrapper" style="margin-top:10px;">
+                        <input type="range" id="chaosFactor" min="1" max="9" value="5" oninput="updateChaosLabel(this.value)">
+                        <div class="range-current" id="chaosFactorLabel">适中（5/9）— 偶然的意外，增添未知感</div>
+                        <div class="range-labels">
+                            <span>极少意外（线性稳推进）</span>
+                            <span>意外拉满（每轮都有变数）</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                        <input type="checkbox" id="fogOfWar" checked style="width:auto;">
+                        启用战争迷雾（探索揭示地图，未探索区域隐藏）
+                    </label>
+                    <div class="hint">关闭则整张地图始终可见。开启后玩家仅能看到已探索区域，移动时逐步揭示周围地形与敌人。</div>
                 </div>
             </div>
 
@@ -1732,19 +1839,21 @@
                 </div>
             </div>
 
-            <div class="cw-tab-nav">
-                <button class="btn secondary cw-tab-prev" id="cwPrevBtn" onclick="cwPrevTab()">上一步</button>
-                <span class="cw-tab-indicator" id="cwTabIndicator">1/4</span>
-                <button class="btn primary cw-tab-next" id="cwNextBtn" onclick="cwNextTab()">下一步</button>
-            </div>
         </div>
-        <div class="modal-footer">
+        <div class="modal-footer cw-footer">
             <div class="inherited-legend-notice" id="inheritedLegendNotice" style="display:none;">
-                <span>📜 将带入传说：<b id="inheritedLegendName"></b></span>
+                <span>📜 将带入传说：<b id="inheritedLegendName"></b> <b id="inheritedLegendTier" style="color:#c9a227;"></b></span>
+                <div id="inheritedLegendBonus" style="width:100%;font-size:12px;color:#9fb0c3;margin-top:4px;"></div>
                 <button class="btn ghost tiny" onclick="clearInheritedLegend()">取消</button>
             </div>
-            <button class="btn secondary" onclick="closeModal('createWorldModal')">返回</button>
-            <button class="btn primary" id="generateWorldBtn" onclick="generateWorld()">确认生成</button>
+            <div class="cw-footer-row">
+                <button class="btn secondary" onclick="closeModal('createWorldModal')">返回</button>
+                <div class="cw-footer-nav">
+                    <button class="btn secondary" id="cwPrevBtn" onclick="cwPrevTab()">上一步</button>
+                    <span class="cw-tab-indicator" id="cwTabIndicator">1/4</span>
+                    <button class="btn primary" id="cwNextBtn" onclick="cwNextTab()">下一步</button>
+                </div>
+            </div>
         </div>
     </div>
 </div>
@@ -1762,7 +1871,195 @@
         <div class="modal-body" id="detailWorldBody"></div>
         <div class="modal-footer">
             <button class="btn secondary" onclick="closeModal('worldDetailModal')">返回</button>
+            <button class="btn ghost" onclick="openImportLoreModal()">导入 IP 设定</button>
+            <button class="btn ghost" onclick="openWorldBookModal()">📖 世界书</button>
             <button class="btn primary" onclick="startGame()">开始游玩</button>
+        </div>
+    </div>
+</div>
+
+<!-- ================= 一键导入 IP 设定 ================= -->
+<div class="modal-overlay" id="importLoreModal">
+    <div class="modal">
+        <div class="modal-header">
+            <h2>导入 IP 设定 · <span id="importLoreWorldName"></span></h2>
+            <button class="modal-close" onclick="closeModal('importLoreModal')">×</button>
+        </div>
+        <div class="modal-body">
+            <p class="hint">粘贴原著 / 世界观文本（TXT 即可），AI 将抽取结构化设定片段并导入知识库，运行时约束叙事。预设世界会自动复制为可编辑副本，不污染原 canon。</p>
+            <textarea id="importLoreText" placeholder="在此粘贴原著段落、人物介绍、设定资料..." style="min-height:160px;width:100%;box-sizing:border-box;"></textarea>
+            <div class="import-options" style="margin:10px 0;display:flex;flex-direction:column;gap:10px;">
+                <div class="opt-block">
+                    <label style="font-size:13px;font-weight:600;color:var(--text-secondary);">① 版权状态</label>
+                    <div style="margin-top:4px;display:flex;gap:16px;flex-wrap:wrap;">
+                        <label style="font-size:13px;"><input type="radio" name="loreCopyright" value="safe" checked onchange="updateLoreCopyrightHint()"> 公版 / 原创（可分享）</label>
+                        <label style="font-size:13px;"><input type="radio" name="loreCopyright" value="copyrighted" onchange="updateLoreCopyrightHint()"> 受版权（仅本地自用）</label>
+                    </div>
+                    <p class="hint" id="loreCopyrightHint" style="margin:4px 0 0;">公版 IP 或原创设定可分享给他人；预设库仅收录此类。</p>
+                </div>
+                <div class="opt-block">
+                    <label style="font-size:13px;font-weight:600;color:var(--text-secondary);">② 导入模式</label>
+                    <div style="margin-top:4px;display:flex;gap:16px;flex-wrap:wrap;">
+                        <label style="font-size:13px;"><input type="radio" name="loreMode" value="append" checked> 追加 + 去重</label>
+                        <label style="font-size:13px;"><input type="radio" name="loreMode" value="category"> 覆盖同类</label>
+                        <label style="font-size:13px;"><input type="radio" name="loreMode" value="overwrite"> 完全覆盖</label>
+                    </div>
+                    <p class="hint" style="margin:4px 0 0;">追加：保留原片段、同标题去重；覆盖同类：替换同类别旧片段；完全覆盖：清空知识库仅用本次导入。</p>
+                </div>
+            </div>
+            <div id="importLoreStatus" class="import-status" style="display:none;"></div>
+            <div id="importLorePreview" class="import-preview"></div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn secondary" onclick="closeModal('importLoreModal')">取消</button>
+            <button class="btn primary" onclick="runExtractLore()">开始抽取</button>
+            <button class="btn primary" id="confirmImportLoreBtn" style="display:none;" onclick="confirmImportLore()">确认导入</button>
+        </div>
+    </div>
+</div>
+
+<!-- ================= 玩家世界书（手动策展） ================= -->
+<div class="modal-overlay" id="worldBookModal">
+    <div class="modal" style="max-width:780px;width:92%;">
+        <div class="modal-header">
+            <h2>📖 世界书 · <span id="worldBookName"></span></h2>
+            <button class="modal-close" onclick="closeModal('worldBookModal')">×</button>
+        </div>
+        <div class="modal-body">
+            <p class="hint">手动策展你的世界：知识库片段（约束叙事的事实 / 人物 / 地点 / 规则）与常量记忆（永不褪色的铁律）。与「导入 IP 设定」互补——这里由你亲自编辑。</p>
+            <div id="wbEditor" style="display:none;background:rgba(127,127,127,0.08);border:1px solid var(--border,#2a3142);border-radius:8px;padding:10px;margin-bottom:12px;"></div>
+            <div style="margin-bottom:14px;">
+                <div class="status-section-title" style="display:flex;align-items:center;">
+                    <span>📚 知识库片段</span>
+                    <button class="btn ghost tiny" style="margin-left:auto;" onclick="wbNewLore()">＋ 新增片段</button>
+                </div>
+                <div id="wbLoreList"></div>
+            </div>
+            <div>
+                <div class="status-section-title" style="display:flex;align-items:center;">
+                    <span>📌 常量记忆（不可违背）</span>
+                    <button class="btn ghost tiny" style="margin-left:auto;" onclick="wbNewFact()">＋ 新增事实</button>
+                </div>
+                <div id="wbFactList"></div>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn secondary" onclick="closeModal('worldBookModal')">完成</button>
+        </div>
+    </div>
+</div>
+
+<!-- ================= 商店 NPC 弹窗 ================= -->
+<div class="modal-overlay" id="shopModal">
+    <div class="modal" style="max-width:680px;width:92%;">
+        <div class="modal-header">
+            <h2>🏪 <span id="shopModalName"></span></h2>
+            <button class="modal-close" onclick="closeShopModal()">×</button>
+        </div>
+        <div class="modal-body">
+            <p class="hint" id="shopModalCur"></p>
+            <div class="status-section-title">货架（固定定价）</div>
+            <div id="shopModalStock"></div>
+            <div class="status-section-title" style="margin-top:14px;">出售给你的物品</div>
+            <div id="shopModalSell"></div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn secondary" onclick="closeShopModal()">离开店铺</button>
+        </div>
+    </div>
+</div>
+
+<!-- ================= 分支快照 / 多时间线 ================= -->
+<div class="modal-overlay" id="snapshotModal">
+    <div class="modal" style="max-width:620px;width:92%;">
+        <div class="modal-header">
+            <h2>🕰️ 分支快照 · 多时间线</h2>
+            <button class="modal-close" onclick="closeModal('snapshotModal')">×</button>
+        </div>
+        <div class="modal-body">
+            <p class="hint">世界：<b id="snapshotWorldName"></b>。在关键抉择前拍一张快照，之后可随时回到此处「分叉」出不同时间线——载入快照不会删除其它快照，原自动存档将从分叉点继续往后写。</p>
+            <div style="display:flex;gap:8px;margin:10px 0 6px;">
+                <input id="snapshotLabelInput" class="text-input" style="flex:1;" placeholder="给这个分叉点起个名字（如：酒馆接委托前 / 第3天抉择）" maxlength="40" />
+                <button class="btn primary" onclick="doTakeSnapshot()">📸 拍摄当前快照</button>
+            </div>
+            <div class="status-section-title" style="margin-top:12px;">已保存的分支</div>
+            <div id="snapshotList"></div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn secondary" onclick="closeModal('snapshotModal')">关闭</button>
+        </div>
+    </div>
+</div>
+
+<!-- ================= 导出故事弹窗 ================= -->
+<div class="modal-overlay" id="exportStoryModal">
+    <div class="modal" style="max-width:720px;width:94%;">
+        <div class="modal-header">
+            <h2>📤 导出故事（Markdown）</h2>
+            <button class="modal-close" onclick="closeModal('exportStoryModal')">×</button>
+        </div>
+        <div class="modal-body">
+            <p class="hint">世界：<b id="exportWorldName"></b>。已把当前周目整理成可读的 Markdown 全文（背景 / 章节时间线 / 正文 / 大事记 / 世界脉搏 / 角色档案 / 世界书 / 任务）。可下载为 .md 文件，或直接复制全文到笔记软件。</p>
+            <div style="margin:8px 0 6px;font-size:12px;color:var(--text-muted);">全文 <b id="exportWordCount">0 字</b></div>
+            <textarea id="exportPreview" class="export-textarea" readonly style="width:100%;height:340px;font-family:var(--mono,ui-monospace,Menlo,Consolas,monospace);font-size:12px;line-height:1.5;resize:vertical;background:var(--bg-soft);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px;"></textarea>
+        </div>
+        <div class="modal-footer">
+            <button class="btn primary" onclick="doExportDownload()">⬇️ 下载 .md</button>
+            <button class="btn ghost" onclick="doExportCopy()">📋 复制全文</button>
+            <button class="btn secondary" onclick="closeModal('exportStoryModal')">关闭</button>
+        </div>
+    </div>
+</div>
+
+<!-- ================= 编辑主角弹窗 ================= -->
+<div class="modal-overlay" id="heroEditModal">
+    <div class="modal">
+        <div class="modal-header">
+            <h2>设定主角</h2>
+            <button class="modal-close" onclick="closeModal('heroEditModal')">&times;</button>
+        </div>
+        <div class="modal-body">
+            <div class="form-group">
+                <label>主角身份与背景（进入世界后也可随时修改）</label>
+                <textarea id="heroEditInput" placeholder="例如：一名来自小镇的少年，性格谨慎，渴望变强；或留空由 AI 设计主角..." style="min-height:90px;"></textarea>
+                <div class="hint">这里设定「你」在这个世界里的身份与背景。修改后会立即影响后续剧情的叙事。</div>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn secondary" onclick="closeModal('heroEditModal')">取消</button>
+            <button class="btn primary" onclick="saveHeroEdit()">保存</button>
+        </div>
+    </div>
+</div>
+
+<!-- ================= NPC 人物卡弹窗 ================= -->
+<div class="modal-overlay" id="npcCardModal">
+    <div class="modal">
+        <div class="modal-header">
+            <h2 id="npcCardTitle">设定人物卡</h2>
+            <button class="modal-close" onclick="closeModal('npcCardModal')">&times;</button>
+        </div>
+        <div class="modal-body">
+            <div class="form-group">
+                <label>外貌</label>
+                <input type="text" id="npcCardAppearance" placeholder="例如：一袭青衫，眉间有疤">
+            </div>
+            <div class="form-group">
+                <label>性格（逗号分隔）</label>
+                <input type="text" id="npcCardTraits" placeholder="例如：沉稳, 寡言, 重情">
+            </div>
+            <div class="form-group">
+                <label>描述</label>
+                <textarea id="npcCardDesc" placeholder="这个人物给你的整体印象、立场、故事背景…" style="min-height:70px;"></textarea>
+            </div>
+            <div class="form-group">
+                <label>备注（你的私人备注）</label>
+                <textarea id="npcCardNote" placeholder="例如：疑似与主线有关 / 第一次见于酒馆…" style="min-height:50px;"></textarea>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn secondary" onclick="closeModal('npcCardModal')">取消</button>
+            <button class="btn primary" onclick="saveNpcCard()">保存</button>
         </div>
     </div>
 </div>
@@ -1782,6 +2079,7 @@
             <button class="btn ghost full-width" onclick="exportLegend()">导出传说</button>
             <button class="btn ghost full-width" onclick="inheritLegendToNewWorld()">带入新世界</button>
         </div>
+        <button class="btn ghost full-width" style="margin-top:4px;" onclick="if(typeof openExportModal==='function') openExportModal()">📤 导出故事（Markdown）</button>
     </div>
 </div>
 
@@ -1815,6 +2113,7 @@
 <div class="toast" id="toast"></div>
 
 <script src="js/app-core.js"></script>
+<script src="js/preset-worlds.js"></script>
 <script src="js/app-ui.js"></script>
 <script src="js/app-ai.js"></script>
 <script src="js/app-game.js"></script>

@@ -6,6 +6,7 @@ async function init() {
     applyFontSize();
     loadConfig();
     loadSaves();
+    loadSnapshots();
 
     // 逐个加载数据文件，各自独立降级，一个失败不影响其他
     try {
@@ -92,22 +93,20 @@ async function init() {
                     embeddingModel = await transformers.pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2");
                     console.log("Embedding model pre-warmed");
                 }
-                // A1: 为尚未带向量的世界补齐（含示例世界），让混合 RAG 对所有世界生效
-                if (typeof worlds !== "undefined" && worlds.length) {
-                    for (const w of worlds) {
-                        try { await computeEmbeddingsForWorld(w); } catch (e) {}
-                    }
-                    if (typeof saveWorlds === "function") saveWorlds();
-                }
+                // G1 性能优化：不在启动时遍历全部 world 预跑 embedding（避免 N 次 ONNX 计算）。
+                // 改为「开始游玩」时才对当前 world 惰性重算（见 startGame）。
+                // 模型本身仍在此预热，使首次进入游戏时重算尽快可用。
             } catch (e) { console.warn("Embedding model pre-warm failed:", e.message); }
         }, 500);
     }
 
-    // iOS 键盘适配
-    if (window.visualViewport) {
-        window.visualViewport.addEventListener("resize", () => {
-            document.body.style.height = window.visualViewport.height + "px";
-        });
+    // ★ 移动端键盘适配：输入框永远保持在键盘上方可见
+    setupMobileKeyboardHandler();
+
+    // ★ A5: 调试面板（?debug=true 开启，含 C5 缓存命中明细）
+    if (window.location.search.indexOf("debug=true") !== -1 || window.location.search.indexOf("debug=1") !== -1) {
+        window._debugMode = true;
+        initDebugPanel();
     }
 }
 
@@ -127,27 +126,67 @@ function loadConfig() {
 
 function loadWorlds() {
     const data = localStorage.getItem(STORAGE_KEYS.worlds);
-    worlds = data ? JSON.parse(data) : [
-        createMagicAcademyWorld(),
-        createHongLouMengWorld()
-    ];
-    // 迁移：旧世界的清理与新的 demo 注入
+    // 首次启动：从预设 IP 库（js/preset-worlds.js）注入全部预设世界
+    worlds = data ? JSON.parse(data) : (typeof buildPresetWorlds === "function" ? buildPresetWorlds() : []);
+    // 迁移：删除已下架的旧预设（红楼/魔法学院/蒸汽与魔法），注入缺失的新预设 IP 库
     let changed = false;
-    // 删除旧的蒸汽与魔法 demo
-    if (worlds.some(w => w.id === "demo_蒸汽与魔法")) {
-        worlds = worlds.filter(w => w.id !== "demo_蒸汽与魔法");
-        changed = true;
+    const OLD_PRESET_IDS = ["demo_蒸汽与魔法", "demo_红楼梦", "demo_magic_academy"];
+    OLD_PRESET_IDS.forEach(function (id) {
+        if (worlds.some(function (w) { return w.id === id; })) {
+            worlds = worlds.filter(function (w) { return w.id !== id; });
+            changed = true;
+        }
+    });
+    if (typeof buildPresetWorlds === "function") {
+        buildPresetWorlds().forEach(function (w) {
+            if (!worlds.some(function (e) { return e.id === w.id; })) {
+                worlds.push(w);
+                changed = true;
+            }
+        });
     }
-    // 注入缺失的 demo 世界
-    if (!worlds.some(w => w.id === "demo_红楼梦")) {
-        worlds.push(createHongLouMengWorld());
-        changed = true;
-    }
-    if (!worlds.some(w => w.id === "demo_magic_academy")) {
-        worlds.push(createMagicAcademyWorld());
-        changed = true;
-    }
+    // ★ C) 迁移：为每个世界补 shops / quest_board 默认结构，并给尚无店铺的世界注入一个通用商店 + 通用任务
+    worlds.forEach(function (w) {
+        if (!Array.isArray(w.shops)) { w.shops = []; changed = true; }
+        if (!Array.isArray(w.quest_board)) { w.quest_board = []; changed = true; }
+        if (typeof seedDefaultShops === "function") seedDefaultShops(w);
+    });
     if (changed) saveWorlds();
+}
+
+// ★ C) 给尚无店铺的世界注入一个通用商店（固定货架/定价）+ 一个通用阵营任务。
+// 不改动 preset-worlds.js，避免预设 canon 测试回归；仅运行时按需补齐。
+function seedDefaultShops(world) {
+    if (!world) return;
+    if (!Array.isArray(world.shops)) world.shops = [];
+    if (!Array.isArray(world.quest_board)) world.quest_board = [];
+    if (world.shops.length === 0) {
+        world.shops.push({
+            id: "shop_general_" + world.id,
+            name: "杂货铺",
+            owner: "老掌柜",
+            location: "城镇集市",
+            currency: "gold",
+            stock: [
+                { item_id: "potion", name: "治疗药水", price: 20, count: 5, type: "consumable", desc: "恢复些许伤势。" },
+                { item_id: "bread", name: "干粮", price: 3, count: 20, type: "consumable", desc: "果腹之物。" },
+                { item_id: "torch", name: "火把", price: 5, count: 10, type: "material", desc: "照亮幽暗角落。" },
+                { item_id: "rope", name: "绳索", price: 8, count: 6, type: "material", desc: "攀援与捆缚皆宜。" }
+            ]
+        });
+    }
+    // 若世界尚无任何开放任务，注入一条通用「跑腿」任务（无势力归属，奖励少量货币）
+    if (world.quest_board.length === 0) {
+        world.quest_board.push({
+            id: "q_runner_" + world.id,
+            faction: "",
+            title: "集市跑腿",
+            desc: "帮杂货铺老掌柜把一封信送到城门口的守卫手中。",
+            requirements: null,
+            reward: { currency: { gold: 15 }, items: [], reputation: {} },
+            status: "open"
+        });
+    }
 }
 
 function createDemoWorld(name, type, desc, tags) {
@@ -164,253 +203,10 @@ function createDemoWorld(name, type, desc, tags) {
         lore_kb: deepClone(loreKB || { ip: name, snippets: [] }),
         system_prompt: "",
         behavior_records: [],
+        pinned_facts: [],
+        oracle: { enabled: true, chaos_factor: 5 },
+        fog_of_war: true,
         initial_choices: []
-    };
-}
-
-function createHongLouMengWorld() {
-    return {
-        id: "demo_红楼梦",
-        name: "红楼梦 · 大观园",
-        type: "ip",
-        desc: "清代乾隆年间，金陵四大家族之首的贾府煊赫一时。宁国府与荣国府比邻而居，园林之中，儿女情长、家族兴衰、命运纠葛交织成一部「千红一哭，万艳同悲」的大戏。",
-        hero: "贾府中一位身份待定的年轻公子/小姐，寄居荣国府。",
-        ip_name: "红楼梦",
-        createdAt: new Date().toISOString().split("T")[0],
-        tags: ["已有IP", "古典文学", "家族兴衰"],
-        schema: {
-            progression_label: "情缘",
-            progression_path_label: "身份",
-            has_skills: true,
-            skill_label: "才艺",
-            attribute_labels: {
-                courage: "胆识", perception: "灵慧", patience: "涵养", luck: "机缘", will: "心性"
-            },
-            time_periods: { morning: "晨起", forenoon: "午前", afternoon: "午后", evening: "黄昏", night: "入夜" },
-            game_over_conditions: ["is_alive === false"]
-        },
-        initial_state: {
-            name: "瑾玉",
-            age: 15,
-            background: "贾府旁支之后，父母早亡，由贾母作主接入荣国府抚养。自幼聪慧，琴棋书画皆有所涉，但性情敏感，常感寄人篱下之伤。",
-            personality: ["聪慧敏感", "多愁善感", "心地纯良"],
-            attributes: {
-                courage: "你向来胆小，丫鬟们放个炮仗你都要捂耳。但若有人欺辱你亲近之人，你又能鼓起莫名的勇气。",
-                perception: "你的眼睛总能捕捉到旁人忽略的细节——丫头们谁和谁走得近了、太太今天嘴角含笑还是暗沉，你总比别人先察觉。",
-                patience: "你能在窗下临半天字帖不挪窝，也能为一首残诗翻来覆去琢磨到三更。",
-                luck: "命运待你不薄不厚，恰似大观园里一阵穿堂风，不知会吹开哪扇门。",
-                will: "心性绵软，凡事容易往心里去。但骨子里又有一股不服的倔劲。"
-            },
-            progression: { path: "贾府旁支", rank: "寄居", progress: 0 },
-            relationships: {
-                "贾母": "老太太疼你，说你眉眼间有几分她年轻时的样子。常唤你到跟前说话解闷。",
-                "林黛玉": "她是老太太的外孙女，比你早来一年。你们一见如故，她常说你是这府里唯一懂她的人。",
-                "贾宝玉": "荣国府的混世魔王，衔玉而生。他待你极好，可你总觉得他看你的眼神里藏着什么说不清的东西。",
-                "薛宝钗": "皇商薛家的千金，端庄大方。你敬她事事周全，却也隐隐感到她对你有所保留。",
-                "王熙凤": "荣国府的管事奶奶，精明强干。她对你还算客气，可你知道她眼里只有利益。",
-                "袭人": "宝玉房里的大丫鬟，温柔体贴。你与她说过几句话，觉得她是个可托付的人。"
-            },
-            skills: {
-                "诗词": "能凑出几首工整的五言七律，偶尔也有惊人之句。黛玉说你灵气有余、火候不足。",
-                "琴艺": "能弹几支《平沙落雁》《梅花三弄》，技法尚可但情感还不够沉厚。",
-                "书画": "临过几年帖，字迹清秀有余，筋骨不足。",
-                "女红": "能绣些简单花样，但绣鸳鸯时总把两只绣得一模一样，被黛玉笑说是个呆子。"
-            },
-            inventory: [
-                { item_id: "jade_pendant", name: "羊脂玉佩", count: 1 },
-                { item_id: "poetry_book", name: "诗集手稿", count: 1 },
-                { item_id: "silver", name: "碎银", count: 5 }
-            ],
-            completed_events: [],
-            current_location: "荣国府 · 贾母院",
-            current_date: { day: 1, period: "morning" },
-            goals: [
-                { goal_id: "greet_grandma", name: "给贾母请安", type: "完成事件", deadline: { day: 1, period: "morning" }, visible: true },
-                { goal_id: "meet_cousins", name: "认识大观园里的兄弟姐妹", type: "关系变化", deadline: { day: 3, period: "night" }, visible: true }
-            ],
-            status_effects: [],
-            npc_activity: { "贾母": "在花厅喝茶歇午", "林黛玉": "在潇湘馆窗前读书", "贾宝玉": "在怡红院与袭人说话", "王熙凤": "在议事厅处理府务", "薛宝钗": "在蘅芜苑做针线" },
-            is_alive: true,
-            death_reason: null
-        },
-        lore_kb: {
-            ip: "红楼梦",
-            snippets: [
-                { id: "hlm1", category: "规则", title: "贾府规矩", content: "贾府是金陵四大家族之首，分为宁国府与荣国府。府中等级森严：老太君（贾母）为最高权威，然后是老爷太太、少爷小姐、大丫鬟、小丫鬟、婆子仆役。晨昏定省不可废，逢年过节祭祀、宴请各有规矩。", keywords: ["贾府", "规矩", "等级", "请安"] },
-                { id: "hlm2", category: "规则", title: "男女大防", content: "虽是一家人，男女之间仍有内外之别。小姐们不可随意抛头露面，与外人接触须有人陪同。宝玉是例外——贾母特许他住在大观园中与众姐妹为伴。", keywords: ["男女", "内外", "大观园"] },
-                { id: "hlm3", category: "规则", title: "世俗与出世", content: "红楼世界有现实与超现实两个层面：一面是贾府的日常起居、官场往来、家族兴衰；另一面是太虚幻境、通灵宝玉、绛珠仙草的宿世之缘。两者交织，不可分割。", keywords: ["太虚幻境", "宿命", "通灵宝玉"] },
-                { id: "hlm4", category: "地点", title: "大观园", content: "为迎接贾元春省亲而建，元春省亲后命众姐妹与宝玉搬入居住。园中有潇湘馆（黛玉居所）、蘅芜苑（宝钗居所）、怡红院（宝玉居所）、稻香村、拢翠庵等多处院落。曲径通幽、花木扶疏，是一方世外桃源。", keywords: ["大观园", "潇湘馆", "蘅芜苑", "怡红院"] },
-                { id: "hlm5", category: "地点", title: "荣国府", content: "贾母与贾政、王夫人所居。正房、耳房、穿堂、后院层次分明。贾母院在最深处，花厅日常摆着各色点心，丫头婆子往来不绝。", keywords: ["荣国府", "贾母", "贾政"] },
-                { id: "hlm6", category: "地点", title: "宁国府", content: "贾珍、尤氏所居。与荣国府仅一墙之隔，格局相似，但风气更奢靡。府中有一座天香楼，常设宴席。", keywords: ["宁国府", "贾珍", "天香楼"] },
-                { id: "hlm7", category: "人物", title: "贾宝玉", content: "荣国府贾政之子，衔玉而生。性格叛逆、厌恶仕途经济，却对女儿家极尽温柔。常住大观园怡红院，身边有袭人、晴雯、麝月等一众丫鬟。他与林黛玉青梅竹马、心灵相通，与薛宝钗则有金玉良缘之说。", keywords: ["贾宝玉", "怡红院", "黛玉", "宝钗", "袭人"] },
-                { id: "hlm8", category: "人物", title: "林黛玉", content: "贾母外孙女，父母双亡后投奔贾府。才华横溢，诗词冠绝大观园，但体弱多病、性情敏感。居潇湘馆，与宝玉情投意合，却常因小事生隙。前世为绛珠仙草，以泪还神瑛侍者灌溉之恩。", keywords: ["林黛玉", "潇湘馆", "绛珠仙草", "诗词"] },
-                { id: "hlm9", category: "人物", title: "薛宝钗", content: "皇商薛家之女，随母兄投奔贾府。端庄大方、处事周全，深得上下欢心。居蘅芜苑，佩戴金锁，与宝玉的通灵宝玉相传是一对「金玉良缘」。", keywords: ["薛宝钗", "蘅芜苑", "金锁", "金玉良缘"] },
-                { id: "hlm10", category: "人物", title: "王熙凤", content: "荣国府管家奶奶，贾琏之妻。精明强干、心狠手辣，偌大贾府在她手里运转自如。嘴甜心苦，对下人恩威并施，对利益锱铢必较。人称「凤辣子」。", keywords: ["王熙凤", "管家", "凤辣子"] },
-                { id: "hlm11", category: "人物", title: "贾母", content: "贾府最高权威，史老太君。年过七旬，经历了贾府的鼎盛与初显败象。极疼孙子宝玉和外孙女黛玉，是府中真正的定海神针。", keywords: ["贾母", "史老太君", "权威"] },
-                { id: "hlm12", category: "人物", title: "其他姐妹", content: "大观园中还有贾迎春（懦弱温和）、贾探春（精明刚烈）、贾惜春（孤僻冷傲）三春姐妹，以及李纨（寡居的珠大奶奶）、史湘云（活泼豪爽的史家小姐）、妙玉（带发修行的拢翠庵主人）等一众女子。", keywords: ["迎春", "探春", "惜春", "湘云", "妙玉"] },
-                { id: "hlm13", category: "事件", title: "前世之缘", content: "宝玉前世为赤瑕宫神瑛侍者，黛玉前世为灵河岸绛珠仙草。神瑛侍者以甘露灌溉，绛珠仙草得以久延岁月。终修成女体后，欲以一生之泪偿还灌溉之恩。", keywords: ["前世", "神瑛侍者", "绛珠仙草", "还泪"] },
-                { id: "hlm14", category: "物品", title: "通灵宝玉", content: "宝玉出生时口中衔来的一块五彩晶莹的玉石，正面刻着'莫失莫忘，仙寿恒昌'，反面是'一除邪祟，二疗冤疾，三知祸福'。它不仅是宝玉的命根子，也是整部书的灵魂象征。", keywords: ["通灵宝玉", "莫失莫忘"] },
-                { id: "hlm15", category: "势力", title: "四大家族", content: "贾、史、王、薛四大家族，祖上皆是勋贵。贾不假，白玉为堂金作马；阿房宫，三百里，住不下金陵一个史；东海缺少白玉床，龙王来请金陵王；丰年好大雪，珍珠如土金如铁。如今的四大家族已显颓势。", keywords: ["四大家族", "贾史王薛", "金陵"] },
-                { id: "hlm16", category: "冲突", title: "金玉良缘 vs 木石前盟", content: "宝玉衔通灵宝玉而生，宝钗有金锁，长辈们认为这是天定的「金玉良缘」。但宝玉心中只有黛玉（前世木石前盟），黛玉因此常感不安、以泪试探。这对三角情感是大观园最核心的张力，牵动所有人的关系网。", keywords: ["金玉良缘", "木石前盟", "黛玉", "宝钗", "宝玉", "金锁", "前世"] },
-                { id: "hlm17", category: "冲突", title: "仕途经济 vs 性情自由", content: "贾政等长辈期望宝玉走科举仕途之路，但宝玉极度厌恶八股文章和官场应酬，认为那些是「禄蠹」所为。这种价值观冲突是贾府内部的核心矛盾，也影响着宝玉与宝钗（支持仕途）和黛玉（理解宝玉）的关系走向。", keywords: ["仕途", "科举", "禄蠹", "贾政", "宝玉", "自由"] },
-                { id: "hlm18", category: "事件", title: "海棠诗社", content: "探春发起海棠诗社，邀请大观园众人到秋爽斋集会。触发条件：白天时段 + 玩家在大观园 + 与探春关系不为冷淡。每位参与者需即兴赋诗，是展示才艺、增进关系的机会。", keywords: ["诗社", "探春", "海棠", "秋爽斋", "诗词", "才艺"] },
-                { id: "hlm19", category: "事件", title: "刘姥姥进大观园", content: "乡下老妪刘姥姥带着土产来贾府攀亲。触发条件：第 2-5 天 + 上午时段 + 玩家在荣国府。刘姥姥粗鄙但幽默，她的到来给大观园带来一阵新鲜空气，但也可能引出各人的真实面目。", keywords: ["刘姥姥", "攀亲", "乡下", "土产"] },
-                { id: "hlm20", category: "事件", title: "黛玉葬花", content: "暮春时节，黛玉见落花飘零，触景生情，在花冢边葬花边吟诗。触发条件：黄昏时段 + 玩家在大观园 + 与黛玉关系不为冷淡。这是了解黛玉内心世界的最佳时机，也是推动宝黛关系的关键场景。", keywords: ["葬花", "黛玉", "落花", "花冢", "暮春"] }
-            ]
-        },
-        system_prompt: `你是《红楼梦》前八十回世界观的 AI 文字游戏叙事主持人。请严格遵循以下设定：
-
-1. 时间：清代乾隆年间，地点：金陵贾府（宁国府/荣国府）及大观园。不得出现现代物品、观念或用语。
-2. 语言风格：模仿曹雪芹的白话章回体，可用简洁雅致的文白夹杂。叙事要含蓄、留白、有诗意。对话需符合人物身份和性格。
-3. 硬性约束：
-   - 不可篡改原著核心设定的命运走向（如黛玉注定泪尽而亡、宝玉终将出家），但可以在细节上自由发挥。
-   - 贾母为最高权威，宝玉不能做违逆贾母之事。
-   - 男女大防不可逾越，小姐们不能随意与外人独处。
-   - 超自然元素（太虚幻境、通灵宝玉的灵异）可以出现，但要保持神秘感和诗意，不可过度直白。
-4. 输出必须是 JSON 格式。`,
-        opening_narrative: `这一日正是仲春时节，荣国府里的海棠开得正盛，一阵风过，花瓣簌簌落了满庭。
-
-你站在贾母院的花厅外，手里绞着帕子，心里七上八下的。老太太今早传话说要见你，你本就寄人篱下、处处小心，哪禁得起这般郑重其事的召唤？是福是祸，一时竟也猜不透。
-
-耳边传来小丫鬟银钏的声音："姑娘，老太太请你进去呢。"
-
-你深吸一口气，理了理鬓边碎发，迈步跨进那挂着湘帘的门——`,
-        initial_choices: [
-            { text: "向贾母恭敬请安，问老太太身子可好", hint: "礼数周全，讨老人家欢心" },
-            { text: "悄悄打量屋内还有谁在，心里盘算应对", hint: "先弄清局面，再决定如何说话" },
-            { text: "抬眼环顾，被墙上的一幅字画吸引", hint: "被风雅之物触动，或许会引出故事" }
-        ],
-        behavior_records: [],
-        style_ref: "original",
-        custom_style: "",
-        ruleset_type: "dnd",
-        rule_freedom: 2,
-        world_freedom: 2,
-        custom_prefix: ""
-    };
-}
-
-function createMagicAcademyWorld() {
-    return {
-        id: "demo_magic_academy",
-        name: "星辉魔法学院",
-        type: "original",
-        desc: "在大陆中央的翡翠森林深处，矗立着千年魔法学院「星辉」。这里招收所有拥有魔力天赋的少年少女，教授元素魔法、炼金术、星象学和魔兽驯养。学院依山而建，七座塔楼分别代表七大元素学派。对新生而言，这里既是梦想之地，也是初恋萌芽的温床——毕竟，谁不会对共赴星象塔观星的同学心动呢？",
-        hero: "刚入学的魔法新生，魔力天赋尚未完全觉醒，对学院的一切充满好奇与期待。",
-        ip_name: "",
-        createdAt: new Date().toISOString().split("T")[0],
-        tags: ["原创", "魔法学院", "恋爱冒险"],
-        schema: {
-            progression_label: "年级",
-            progression_path_label: "学派",
-            has_skills: true,
-            skill_label: "魔法/课程",
-            attribute_labels: { courage: "勇气", perception: "洞察", patience: "专注", luck: "幸运", will: "意志" },
-            time_periods: { morning: "早课", forenoon: "上午课", afternoon: "午后", evening: "黄昏", night: "星夜" },
-            game_over_conditions: ["is_alive === false"]
-        },
-        initial_state: {
-            name: "新生",
-            age: 15,
-            background: "普通商人家庭出身，魔力天赋在一次意外中偶然显露，被学院导师发现后破格录取。你对魔法世界几乎一无所知，怀揣着紧张与憧憬踏入了星辉学院的大门。",
-            personality: ["好奇", "腼腆", "善良"],
-            attributes: {
-                courage: "你连主动和人搭话都要深呼吸三次，但骨子里有一股不愿服输的倔劲。",
-                perception: "你对周围人的情绪变化异常敏感，能察觉到谁开心、谁在强颜欢笑。",
-                patience: "你能在图书馆泡一下午只为弄懂一条咒语，但实操课上三次放不出魔法球，也会急得咬笔头。",
-                luck: "你的运气像一枚两面硬币——今天可能捡到一枚稀有魔石，明天可能在楼梯上摔一跤。",
-                will: "虽然嘴上说着'我不行'，但每次想放弃的时候，你总能咬咬牙再试一次。"
-            },
-            progression: { path: "未定", rank: "一年级新生", progress: 0 },
-            relationships: {
-                "伊莉丝·风语者": "风元素学派的天才少女，银发紫瞳，总是独来独往。在入学仪式上她多看了你一眼，你不知道那意味着什么。",
-                "艾伦·炎心": "火元素学派的阳光少年，你的室友，自来熟到令人发指。第一天就把你的名字记错成谐音绰号，你懒得纠正了。",
-                "露娜·夜歌": "暗元素学派的学姐，三年级。温柔得像月光，但有点天然呆，经常迷路。她在开学第一天就撞上了你——字面意义上的。",
-                "格雷教授": "水元素学派导师，中年儒雅，说话永远像是在念诗。他是第一个发现你魔力天赋的人，对你寄予厚望。",
-                "费恩学长": "光元素学派，五年级的学院首席。英俊、温和、成绩全优，是所有新生仰望的存在——但他对谁都一视同仁地温柔，反而更难接近。"
-            },
-            skills: {
-                "基础元素操控": "连一个完整的火苗都点不着，只能搓出几点可怜的火星。",
-                "魔法理论": "昨天才领到课本，连目录都没翻完。",
-                "炼金术": "你以为炼金术就是往锅里扔材料乱炖，结果差点炸了实验室——还好艾伦拉住了你。",
-                "星象学": "你能认出北极星，仅限于此。",
-                "魔兽驯养": "你对魔兽唯一的经验是家里养过一只猫。"
-            },
-            inventory: [
-                { item_id: "wand", name: "新生魔杖", count: 1 },
-                { item_id: "robe", name: "学院制服", count: 1 },
-                { item_id: "textbook", name: "初级魔法理论", count: 1 },
-                { item_id: "coin", name: "银币", count: 8 }
-            ],
-            completed_events: [],
-            current_location: "星辉学院 · 中央广场",
-            current_date: { day: 1, period: "morning" },
-            goals: [
-                { goal_id: "sorting", name: "完成学派分院仪式", type: "完成事件", deadline: { day: 1, period: "afternoon" }, visible: true },
-                { goal_id: "make_friend", name: "认识一位同学", type: "关系变化", deadline: { day: 3, period: "night" }, visible: true }
-            ],
-            status_effects: [],
-            npc_activity: { "艾伦·炎心": "在宿舍整理行李，等着和你一起去广场", "伊莉丝·风语者": "独自站在广场边缘的白桦树下", "露娜·夜歌": "在图书馆和某个书架之间迷路了", "格雷教授": "在教师席上翻阅新生名册", "费恩学长": "在广场中央协助新生报到" },
-            is_alive: true,
-            death_reason: null
-        },
-        lore_kb: {
-            ip: "星辉魔法学院",
-            snippets: [
-                { id: "ma1", category: "规则", title: "魔法基础规则", content: "施法需要魔杖和咒语配合，还需集中精神力。新生在分院前只能施展基础元素魔法。学院内禁止在走廊斗法，违反者罚扫图书馆一周。", keywords: ["魔杖", "咒语", "魔法", "规则", "新生"] },
-                { id: "ma2", category: "规则", title: "七大元素学派", content: "学院设有七大学派：风（速度与感知）、火（力量与激情）、水（治疗与变化）、土（防御与坚韧）、光（治愈与守护）、暗（隐匿与幻术）、雷（爆发与控制）。新生分院通过仪式由魔法水晶球判断最适合的学派。", keywords: ["学派", "元素", "风", "火", "水", "土", "光", "暗", "雷", "分院"] },
-                { id: "ma3", category: "规则", title: "学院生活", content: "学生按年级分班，每班约20人。学期为一年，分为三阶段：基础期（1-4月）、专精期（5-8月）、考核期（9-12月）。考核不合格可补考一次，再不合格则退学。", keywords: ["学院", "年级", "学期", "考核", "补考"] },
-                { id: "ma4", category: "地点", title: "中央广场", content: "学院核心区域，铺着白色魔石地砖，中央是一座巨大的星辉喷泉。每年开学典礼和重要仪式在此举行。周围环绕着食堂、行政楼和公告栏。", keywords: ["广场", "喷泉", "开学", "仪式"] },
-                { id: "ma5", category: "地点", title: "七塔", content: "七座魔法塔分别属七大学派。每座塔有自己的风格：风塔轻盈高挑藤蔓缠绕、火塔外墙似有岩浆流淌、水塔有一道不息之泉从塔顶倾泻、光塔通体洁白绽放柔光、暗塔隐在紫色雾霭中、土塔方正敦实如堡垒、雷塔顶端总有电弧闪烁。", keywords: ["塔", "风塔", "火塔", "水塔", "光塔", "暗塔", "土塔", "雷塔"] },
-                { id: "ma6", category: "地点", title: "星象塔", content: "学院最高建筑，专用于星象学教学。顶部有巨大的望远镜和露天观星台。传说在流星雨之夜登上星象塔许愿，愿望就会实现——因此这里也是恋人们最钟爱的约会地点。", keywords: ["星象塔", "观星", "流星雨", "许愿", "约会"] },
-                { id: "ma7", category: "地点", title: "翡翠森林", content: "环绕学院的原始魔法森林，是魔兽课实践场地和炼金材料的来源地。林中有古老的魔法遗迹和一条会唱歌的清澈溪流。学院规定新生不得独自深入森林。", keywords: ["森林", "翡翠", "魔兽", "炼金", "遗迹"] },
-                { id: "ma8", category: "人物", title: "伊莉丝·风语者", content: "风元素学派一年级，银发紫瞳，天才少女，却极度不善社交。日常行程：晨起在风塔顶练习风刃，上午课后在图书馆角落看书，黄昏时独自在翡翠森林边缘散步。她似乎背负着某个家族的秘密。", keywords: ["伊莉丝", "风语者", "风", "银发", "天才"] },
-                { id: "ma9", category: "人物", title: "艾伦·炎心", content: "火元素学派一年级，你的室友。阳光开朗、话多、容易激动，是行走的气氛炸弹。日常行程：晚起急急忙忙跑去教室，午休和同学们在广场聊天，夜晚在宿舍练火球术（经常烧到窗帘）。", keywords: ["艾伦", "炎心", "火", "室友"] },
-                { id: "ma10", category: "人物", title: "露娜·夜歌", content: "暗元素学派三年级学姐，温柔天然呆。日常行程：上午经常在教学楼迷路向你求救，下午在暗塔研究幻术，夜晚在星象塔顶独自看星星。她对星空的痴迷无人能及。", keywords: ["露娜", "夜歌", "暗", "学姐", "星空"] },
-                { id: "ma11", category: "人物", title: "费恩学长", content: "光元素学派五年级，学院首席。完美而温柔，是所有人的榜样。日常行程：早晨在光塔顶冥想，白日在各教室协助教授授课，黄昏时在广场花坛旁看书。他喜欢在花坛边的长椅上安静地读书，偶尔会收下一两封匿名情书，但从未回应过。", keywords: ["费恩", "光", "首席", "学长"] },
-                { id: "ma12", category: "人物", title: "格雷教授", content: "水元素学派导师，你的发掘者。为人儒雅温和，但上课时要求严苛。他喜欢在课堂上用诗歌比喻魔法原理。日常在办公室整理旧魔法手稿，常在深夜还能看到他办公室的灯亮着。", keywords: ["格雷", "教授", "水", "导师"] },
-                { id: "ma13", category: "冲突", title: "元素学派间的微妙竞争", content: "七大学派表面上和睦，实则暗流涌动。火学派认为光学派软弱、暗学派认为风学派浮躁、土学派嫌水学派多变。但所有学派都一致推崇雷学派最强——雷塔的学生也确实常年霸占学年榜首。这种竞争有时会升级为塔楼间的斗法事件。", keywords: ["学派", "竞争", "冲突", "对立", "斗法"] },
-                { id: "ma14", category: "冲突", title: "魔力天赋与社会出身", content: "学院中有两类学生：出身魔法世家的名门之后和像你一样偶然觉醒的普通学生。前者往往傲慢、自带高级魔杖和家传咒语；后者则靠学院给予的基础配备起步。这道隐形的阶级线常常引发摩擦。你的魔力天赋是否能证明——出身不等于上限？", keywords: ["名门", "平民", "阶级", "天赋", "出身"] },
-                { id: "ma15", category: "事件", title: "分院仪式", content: "开学典礼上的重头戏。新生轮流触摸魔法水晶球，球体根据天赋显现对应元素的颜色。分院结果可能出乎意料——有时球会呈现两种颜色，意味着跨学派天赋。触发条件：第 1 天上午 + 玩家在中央广场。这是决定你学派归属的关键时刻。", keywords: ["分院", "水晶球", "元素", "学院", "典礼"] },
-                { id: "ma16", category: "事件", title: "流星雨之夜", content: "每年入秋的第一个夜晚，星辉学院上空会降下魔法流星雨。传说如果两人一同在星象塔顶观看流星雨并在流星落下时牵手，他们的魔力会产生共鸣。触发条件：第 5-15 天 + 星夜时段 + 玩家在学院 + 与任意角色的关系不为冷淡。这是经典的恋爱事件触发器。", keywords: ["流星雨", "星象塔", "许愿", "牵手", "共鸣", "恋爱"] },
-                { id: "ma17", category: "事件", title: "翡翠森林试炼", content: "新生第一学期的期中测试：三人一组进入翡翠森林，寻找指定的魔法植物并在日落前返回。途中可能遭遇幼年魔兽、迷路、或发现古代魔法遗迹。触发条件：第 6-10 天 + 早晨 + 玩家已在某学派。队友由教授分配，可能与好感最高或最低的同学组队。", keywords: ["森林", "试炼", "期中", "魔兽", "队友"] }
-            ]
-        },
-        system_prompt: `你是星辉魔法学院背景的 AI 文字游戏主持人。风格定位：青春校园 + 恋爱冒险。
-
-世界观硬约束：
-- 施法需要魔杖和咒语配合，新生不能施展高级魔法。
-- 七大元素学派各有特色，分院后不能转学派但可选修其他元素。
-- 学院纪律不能公然挑战——私下小动作可以，公开违规会被罚。
-- 魔力天赋的发展需要时间沉淀，不可一夜成为顶尖法师。
-- 魔法世界存在真实的危险，但学院范围通常安全。
-
-叙事风格：
-- 温暖轻快，带有青春期的朦胧感与悸动感。
-- 日常对话要轻松自然，恋爱线要含蓄而不直白——更多是微妙的关心、不经意的脸红、夜空下的安静陪伴。
-- 魔法描写要有画面感和诗意。
-- 允许适当的幽默元素（艾伦是天然的笑点提供者）。`,
-        opening_narrative: `九月的晨光穿过翡翠森林的树冠，在白色魔石铺就的广场上洒下斑驳的光影。
-
-你站在这片陌生的开阔地上，手里攥着那封薄薄的录取通知书，上面用银色墨水写着你的名字，下面是一行烫金小字——「欢迎来到星辉魔法学院」。周围是和你一样穿着崭新制服的新生，有人兴奋地议论着即将看到的七座魔法塔，有人紧张地默背着从家里带来的基础咒语。
-
-一阵微风拂过，广场中央的星辉喷泉忽然亮起柔和的蓝光——那是开学典礼即将开始的信号。
-
-正在你踌躇着不知道该往哪走时，一个红发少年从人群中挤过来，大大咧咧地拍了拍你的肩膀：「嘿！你也是新生吧？我叫艾伦·炎心——咦，你这表情，该不会是在紧张吧？别怕，我打听好了，先集合听校长训话，然后就是重头戏——分院仪式！」
-
-他叽里呱啦说了一通，你只来得及勉强记住他的名字。而就在此时，你的余光捕捉到广场边缘的一棵白桦树下，站着一个银色长发的女孩，她正静静望着喷泉，阳光在她的发梢上跳动着细碎的光。`,
-        initial_choices: [
-            { "text": "对艾伦微笑点头：「谢谢你，我叫……」，向他介绍自己", "hint": "主动结交第一个朋友，友好开局" },
-            { "text": "目光被白桦树下的银发女孩吸引，忍不住多看了几眼", "hint": "被神秘气质吸引，可能开启特殊关系线" },
-            { "text": "翻看录取通知书，研究上面提到的七大学派介绍", "hint": "理性派，了解世界观后再做选择" }
-        ],
-        behavior_records: [],
-        style_ref: "none",
-        custom_style: "",
-        ruleset_type: "dnd",
-        rule_freedom: 4,
-        world_freedom: 4,
-        custom_prefix: ""
     };
 }
 
@@ -419,12 +215,43 @@ function loadSaves() {
     saves = data ? JSON.parse(data) : [];
 }
 
+/* ================= D 分支快照：存储读写 ================= */
+function loadSnapshots() {
+    try {
+        const data = localStorage.getItem(STORAGE_KEYS.snapshots);
+        snapshots = data ? JSON.parse(data) : [];
+    } catch (e) {
+        console.warn("snapshots 读取失败:", e.message);
+        snapshots = [];
+    }
+}
+
+function saveSnapshots() {
+    try {
+        // 快照含完整 world（可能带 embedding），体积偏大；配额不足时给出警告但不致命
+        localStorage.setItem(STORAGE_KEYS.snapshots, JSON.stringify(snapshots));
+    } catch (e) {
+        console.warn("snapshots 持久化失败（可能 localStorage 配额不足）:", e.message);
+        showToast("分支快照保存失败：本地存储空间不足，请删除部分旧快照", "error");
+    }
+}
+
+// ★ A3: 检测 localStorage 配额耗尽错误（跨浏览器兼容）
+function _isQuotaError(e) {
+    return e && (e.name === "QuotaExceededError" || e.name === "NS_ERROR_DOM_QUOTA_REACHED" ||
+        (e.message && (e.message.indexOf("quota") !== -1 || e.message.indexOf("QUOTA") !== -1 ||
+         e.message.indexOf("storage") !== -1)));
+}
+
 function saveWorlds() {
     try {
         // 不持久化片段向量（384 维 embedding），避免 localStorage 膨胀/配额超限；
         // 向量在加载时由 computeEmbeddingsForWorld 重新计算（见 init）。
         localStorage.setItem(STORAGE_KEYS.worlds, JSON.stringify(worlds, (k, v) => (k === "embedding" ? undefined : v)));
     } catch (e) {
+        if (_isQuotaError(e)) {
+            showToast("存储空间不足！建议在首页清理不用的世界以释放空间。", "warn");
+        }
         console.error("worlds 持久化失败:", e.message);
     }
 }
@@ -464,6 +291,9 @@ function saveState(serialized) {
         localStorage.setItem(STORAGE_KEYS.chatHistory, chatStr);
         localStorage.setItem(STORAGE_KEYS.chatSummary, JSON.stringify(chatSummary));
     } catch (e) {
+        if (_isQuotaError(e)) {
+            showToast("游戏数据保存失败：存储空间不足。建议清理旧存档。", "warn");
+        }
         console.warn("localStorage 写入失败，可能空间不足", e);
     }
 }
@@ -480,22 +310,9 @@ function saveConfig() {
     localStorage.setItem(STORAGE_KEYS.config, JSON.stringify(cfg));
 }
 
-/**
- * 构建最终 API 请求 URL
- * 如果配置了 CORS 代理，则将请求通过代理转发：
- *   代理URL + /chat/completions 的原始路径
- *   例如：corsProxy=https://proxy.workers.dev → https://proxy.workers.dev/https://api.deepseek.com/chat/completions
- * 如果没有配置代理，直接请求 baseUrl + /chat/completions
- */
-function buildApiUrl(baseUrl, corsProxy) {
-    const apiPath = baseUrl.replace(/\/$/, "") + "/chat/completions";
-    if (corsProxy) {
-        return corsProxy.replace(/\/$/, "") + "/" + apiPath;
-    }
-    return apiPath;
-}
-
 /* ================= 世界模板配置 ================= */
+// 注意：buildApiUrl / normalizeApiBaseUrl 已上移至 app-core.js（纯函数，I 项 URL 拼接健壮性）。
+//       app-core 先于本文件加载，全局 buildApiUrl 即为健壮版本，本文件不再重复定义，避免旧版覆盖。
 function defaultWorldSchema(styleHint) {
     const isXianxia = /仙|侠|修|道|武|玄|魔/.test(styleHint);
     const isMagicSchool = /霍格沃茨|哈利|魔法|学院|年级|巫师/.test(styleHint);
@@ -704,13 +521,27 @@ function inheritLegendToNewWorld() {
     showToast("已带入上一段传说，创建世界时会作为彩蛋注入", "success");
 }
 
-// 在创建世界弹窗中显示/隐藏「将带入传说」提示
+// 在创建世界弹窗中显示/隐藏「将带入传说」提示（含评级 + 机制性馈赠预览）
 function refreshInheritedLegendUI() {
     const notice = document.getElementById("inheritedLegendNotice");
     if (!notice) return;
     if (pendingInheritedLegend) {
-        document.getElementById("inheritedLegendName").textContent =
-            pendingInheritedLegend.worldName + "（" + pendingInheritedLegend.reputationTitle + "）";
+        const info = buildInheritedLegend(pendingInheritedLegend);
+        const nameEl = document.getElementById("inheritedLegendName");
+        const tierEl = document.getElementById("inheritedLegendTier");
+        const bonusEl = document.getElementById("inheritedLegendBonus");
+        if (nameEl) nameEl.textContent =
+            pendingInheritedLegend.worldName + "（" + (pendingInheritedLegend.reputationTitle || "无名旅人") + "）";
+        if (tierEl) tierEl.textContent = "【" + info.tierLabel + "级传说】";
+        if (bonusEl) {
+            const b = info.bonuses;
+            const parts = [];
+            if (b.reputation) parts.push("声望 +" + b.reputation);
+            if (b.currency && b.currency.gold) parts.push("金币 +" + b.currency.gold);
+            if (b.npcAttitude) parts.push("特殊 NPC 好感 +" + b.npcAttitude);
+            if (b.startingItem) parts.push("遗物「" + b.startingItem + "」");
+            bonusEl.textContent = parts.length ? "开局馈赠：" + parts.join("，") : "开局馈赠：微薄祝福";
+        }
         notice.style.display = "flex";
     } else {
         notice.style.display = "none";
@@ -948,6 +779,23 @@ function updateWorldFreedomLabel(value) {
     if (el) el.textContent = labels[value] || '';
 }
 
+function updateChaosLabel(value) {
+    var v = parseInt(value) || 5;
+    var labels = {
+        1: '极少意外（1/9）— 几乎线性，只在关键处偶发变数',
+        2: '偶发意外（2/9）— 长线才来一次转折',
+        3: '偏低（3/9）— 偶尔的小惊喜',
+        4: '偏低（4/9）— 时不时来点意外',
+        5: '适中（5/9）— 偶然的意外，增添未知感',
+        6: '偏高（6/9）— 意外渐多，故事常有变数',
+        7: '偏高（7/9）— 频繁转折，充满未知',
+        8: '很高（8/9）— 几乎每轮都有意外',
+        9: '意外拉满（9/9）— 每轮必有变数'
+    };
+    var el = document.getElementById('chaosFactorLabel');
+    if (el) el.textContent = labels[v] || ('混沌因子 ' + v + '/9');
+}
+
 /* ================= 文风 & 自由度选择 ================= */
 function onWorldTypeChange(value) {
     const ipNameField = document.getElementById("ipNameField");
@@ -1018,13 +866,23 @@ async function generateWorld() {
     const name = document.getElementById("worldName").value.trim();
     const type = document.getElementById("worldType").value;
     const desc = document.getElementById("worldDesc").value.trim();
-    const hero = document.getElementById("heroDesc").value.trim();
+    const hero = ""; // 主角设定已移至世界详情弹窗（进入世界前填写），创建阶段不收集
     const ipName = type === "ip" ? document.getElementById("ipName").value.trim() : "";
     const styleRef = getSelectedStyleRef();
     const customStyle = styleRef === "custom" ? document.getElementById("customStyle").value.trim() : "";
     const rulesetType = selectedRuleset || 'dnd';
     const ruleFreedom = parseInt(document.getElementById("ruleFreedom").value);
     const worldFreedom = parseInt(document.getElementById("worldFreedom").value);
+    // 预言机 / 混沌因子：创建时选择是否启用 + 强度（1-9）
+    const oracleEnabledEl = document.getElementById("oracleEnabled");
+    const chaosFactorEl = document.getElementById("chaosFactor");
+    const oracleConfig = {
+        enabled: oracleEnabledEl ? oracleEnabledEl.checked : true,
+        chaos_factor: chaosFactorEl ? (parseInt(chaosFactorEl.value) || 5) : 5
+    };
+    // 战争迷雾：创建时选择是否启用
+    const fogOfWarEl = document.getElementById("fogOfWar");
+    const fogOfWar = fogOfWarEl ? fogOfWarEl.checked : true;
     const prefixEnabled = document.querySelector("input[name='customPrefixEnable']:checked");
     const customPrefix = (prefixEnabled && prefixEnabled.value === "on") ? document.getElementById("customPrefix").value.trim() : "";
     const worldPrefixEnabled = document.querySelector("input[name='worldPrefixEnable']:checked");
@@ -1046,6 +904,8 @@ async function generateWorld() {
 
     try {
         const generated = await callWorldGenerationLLM(name, type, desc, hero, ipName, sourceFileContent, styleRef, customStyle, rulesetType, ruleFreedom, worldFreedom, worldPrefix);
+        // H) 基调显式持久化：优先用 AI 显式定调的 tone，否则降级为文本推断（兜底）
+        const toneVal = normalizeTone(generated.tone) || inferToneFromWorld({ desc: desc, hero: hero, opening_narrative: generated.opening_narrative || "" });
         const world = {
             id: "w" + Date.now(),
             name,
@@ -1055,6 +915,7 @@ async function generateWorld() {
             ip_name: ipName,
             createdAt: new Date().toISOString().split("T")[0],
             tags: analyzeWorldTags(name, desc, hero, type, ipName),
+            tone: toneVal,
             schema: generated.schema || defaultWorldSchema(name + " " + desc),
             initial_state: generated.initial_state,
             lore_kb: generated.lore_kb,
@@ -1063,7 +924,9 @@ async function generateWorld() {
             opening_narrative: generated.opening_narrative || "",
             initial_choices: generated.initial_choices || [],
             system_prompt: generated.system_prompt,
-            behavior_records: narrativeAnchors ? [{ id: "b_anchor_" + Date.now().toString(36), text: "主角叙事锚点：" + narrativeAnchors, createdAt: new Date().toISOString() }] : [],
+            behavior_records: narrativeAnchors ? [{ id: "b_anchor_" + (typeof genId === "function" ? genId("").slice(0, 12) : Date.now().toString(36)), text: "主角叙事锚点：" + narrativeAnchors, createdAt: new Date().toISOString() }] : [],
+            pinned_facts: [],
+        oracle: { enabled: true, chaos_factor: 5 },
             narrative_anchors: narrativeAnchors || (generated.initial_state && generated.initial_state.narrative_anchors) || "",
             source_content: sourceFileContent || "",
             style_ref: styleRef,
@@ -1071,29 +934,39 @@ async function generateWorld() {
             ruleset_type: rulesetType,
             rule_freedom: ruleFreedom,
             world_freedom: worldFreedom,
-            custom_prefix: customPrefix
+            custom_prefix: customPrefix,
+            oracle: oracleConfig,
+            fog_of_war: fogOfWar
         };
 
         // A1: 为新建世界的知识片段补齐向量（与预计算向量同格式）
         await computeEmbeddingsForWorld(world);
 
-        // E12：将上一段传说作为彩蛋写入知识库，并标记继承引用
+        // F 跨周目 meta 成长：将上一段传说评级，作为「彩蛋 + 机制性馈赠」注入新世界
         if (pendingInheritedLegend) {
             const leg = pendingInheritedLegend;
+            const payload = buildInheritedLegendPayload(leg);
             const legHeroName = leg.heroName || "一位无名旅人";
-            const legendSnippet = {
-                id: "b_legend_" + Date.now().toString(36),
-                category: "事件",
-                title: "久远传说：" + leg.worldName,
-                content: "（彩蛋·前世余音）据古老传闻，曾有一位名为「" + legHeroName + "」的旅人在此世界留下传说——" + leg.summary + "也许在某个角落，仍有人记得这个名字，或在古籍、遗迹中留下过印记。",
-                keywords: ["传说", "彩蛋", "前世余音", legHeroName, leg.worldName]
-            };
+            const legendSnippet = Object.assign({ id: "b_legend_" + (typeof genId === "function" ? genId("").slice(0, 12) : Date.now().toString(36)) }, payload.loreSnippet);
             if (world.lore_kb && Array.isArray(world.lore_kb.snippets)) {
                 world.lore_kb.snippets.push(legendSnippet);
             } else {
                 world.lore_kb = { ip: world.name, snippets: [legendSnippet] };
             }
-            world.inherited_legend = { id: leg.id, worldName: leg.worldName, heroName: leg.heroName, summary: leg.summary };
+            world.inherited_legend = {
+                id: leg.id,
+                worldName: leg.worldName,
+                heroName: leg.heroName,
+                summary: leg.summary,
+                tier: payload.tier,
+                tierLabel: payload.tierLabel,
+                score: payload.score,
+                bonuses: payload.bonuses
+            };
+            // 机制性加成：写入 initial_state，新周目开局即生效
+            if (world.initial_state) {
+                world.initial_state = applyLegendBonusToInitialState(world.initial_state, leg);
+            }
             pendingInheritedLegend = null;
             refreshInheritedLegendUI();
         }
@@ -1119,7 +992,6 @@ async function generateWorld() {
 
         document.getElementById("worldName").value = "";
         document.getElementById("worldDesc").value = "";
-        document.getElementById("heroDesc").value = "";
         document.getElementById("ipName").value = "";
         document.getElementById("customStyle").value = "";
         document.getElementById("customPrefix").value = "";
@@ -1330,6 +1202,8 @@ ${rulesetInfo}
 
 6. initial_choices: 开场选项数组（2-4个），每个选项包含 {text: "选项文本", hint: "简短提示"}，用于玩家首次进入时选择第一个行动。选项要符合世界观和角色设定，引导而非强制。
 
+7. tone: 叙事基调对象，包含 {primary: "日常"|"高张力"|"悬疑"|"浪漫"|"混合", labels: [字符串数组，可包含多个维度如 ["日常","浪漫"]], description: "一句话描述本世界的叙事基调与氛围倾向"}。请基于世界观与主角设定**显式判定**本世界的叙事基调，不要笼统或回避；这是世界运行时 system prompt 的核心氛围设定，必须认真填写。
+
 # 注意
 
 ${legendSection}
@@ -1498,12 +1372,22 @@ function mockGenerateWorld(name, type, desc, hero, ipName) {
         opening_narrative = `你从漫长的昏睡中醒来，发现自己躺在一间陌生的房间里。窗外透进来的光线带着你不熟悉的色调——偏暖、偏沉，像是某个你从未到过的地方的傍晚。空气中有一股若有若无的气味，说不上是好闻还是难闻，只是和记忆里所有已知的气味都不一样。\n\n你坐起身来，四处打量。桌上放着一张字条，上面写着你的名字和一句话：「你来的时间比预期的早了半天，先去楼下看看吧。」\n\n你不知道写下这行字的人是谁，也不清楚"预期"指的是什么。但直觉告诉你，此刻走出去或许比留在原地更安全——或者说，更有趣。`;
     }
 
+    let tone;
+    if (isMagicSchool) {
+        tone = { primary: "日常", labels: ["日常", "浪漫"], description: "轻松中藏着魔法校园的奇妙与少年成长。" };
+    } else if (isXianxia) {
+        tone = { primary: "高张力", labels: ["高张力", "浪漫"], description: "修仙之路危机与机缘并存，恩怨如影随形。" };
+    } else {
+        tone = { primary: "日常", labels: ["日常"], description: "未知的旅程，节奏由探索者自己把握。" };
+    }
+
     return {
         schema,
         initial_state,
         lore_kb: { ip: name, snippets: lore_snippets },
         system_prompt,
-        opening_narrative
+        opening_narrative,
+        tone
     };
 }
 
@@ -1552,6 +1436,7 @@ function renderWorldList() {
             </div>
             <div class="wc-desc">${w.desc || '暂无描述'}</div>
             <div class="wc-tags">
+                ${(w.tone ? `<span class="tag tone">${w.tone.primary}</span>` : "")}
                 ${(w.tags || []).map(t => `<span class="tag">${t}</span>`).join('')}
             </div>
             <div class="wc-actions" onclick="event.stopPropagation()">
@@ -1577,6 +1462,7 @@ function renderSaveList() {
             <div class="save-info">
                 <div class="item-title">${s.worldName}${isDead ? ' <span class="dead-badge">&#x2620; 已死亡</span>' : ""}</div>
                 <div class="item-meta">${s.progress}<br>最后游玩：${s.updatedAt}</div>
+                ${s.hero ? `<div class="item-hero">主角：${escapeHtml(s.hero.length > 40 ? s.hero.slice(0, 40) + "…" : s.hero)}</div>` : ""}
             </div>
             <div class="save-actions">
                 <button class="save-play-btn" onclick="loadSave('${s.id}')">继续游玩</button>
@@ -1584,6 +1470,435 @@ function renderSaveList() {
             </div>
         </div>
     `}).join("");
+}
+
+// 激活顶部「场景展示」面板：实时呈现当前地点 / 时段 / 氛围 / 世界脉搏 / 相关人物
+function renderScenePanel() {
+    const panel = document.getElementById("scenePanel");
+    if (!panel || !gameState) return;
+    const loc = gameState.current_location || (currentWorld && currentWorld.opening_narrative ? "初始之地" : "此处");
+    const period = (gameState.current_date && gameState.current_date.period) || "day";
+    const day = (gameState.current_date && gameState.current_date.day) || 1;
+    const periodLabel = (typeof DEFAULT_PERIOD_LABELS !== "undefined" && DEFAULT_PERIOD_LABELS[period]) ? DEFAULT_PERIOD_LABELS[period] : period;
+    let ambience = "";
+    try { ambience = (typeof buildAmbienceHint === "function") ? buildAmbienceHint(loc, period, currentWorld) : ""; } catch (e) { ambience = ""; }
+    const events = (currentWorld && currentWorld.current_world_events) || [];
+    const latestPulse = events.length ? events[events.length - 1] : null;
+    const rels = gameState.relationships || {};
+    const npcNames = Object.keys(rels).slice(0, 2);
+    panel.innerHTML = `
+        <div class="scene-card">
+            <div class="scene-head">
+                <span class="scene-loc">📍 ${escapeHtml(loc)}</span>
+                <span class="scene-time">第${day}天 · ${escapeHtml(String(periodLabel))}</span>
+            </div>
+            ${ambience ? `<div class="scene-amb">${escapeHtml(ambience)}</div>` : ""}
+            ${latestPulse ? `<div class="scene-pulse">📣 ${escapeHtml(latestPulse.text)}</div>` : ""}
+            ${npcNames.length ? `<div class="scene-npc">同行 / 相关：${npcNames.map(function(n){return escapeHtml(n);}).join("、")}</div>` : ""}
+        </div>`;
+    panel.style.display = "";
+    updateTopPanelPlaceholder();
+}
+
+/* ================= 一键导入 IP 设定 ================= */
+/**
+ * 确保当前世界可编辑：若为预设世界（preset=true，system_prompt 含写死 canon），
+ * 则先派生一个可编辑副本，避免污染原 canon。返回是否刚刚派生了副本。
+ */
+function ensureEditableWorld() {
+    if (!currentWorld) return false;
+    if (currentWorld.preset === true) {
+        const copy = deepClone(currentWorld);
+        copy.preset = false;
+        copy.id = "copy_" + currentWorld.id + "_" + (typeof genId === "function" ? genId("").slice(0, 10) : Date.now().toString(36));
+        copy.name = currentWorld.name + "（可编辑副本）";
+        copy.createdAt = new Date().toISOString().split("T")[0];
+        copy.imported_lore = true;
+        worlds.push(copy);
+        saveWorlds();
+        currentWorld = copy;
+        showToast("已复制为可编辑副本，导入将作用于副本（预设原文不受影响）", "success", 3000);
+        return true;
+    }
+    return false;
+}
+
+function openImportLoreModal() {
+    if (!currentWorld) return;
+    const ta = document.getElementById("importLoreText");
+    if (ta) ta.value = "";
+    const prev = document.getElementById("importLorePreview");
+    if (prev) prev.innerHTML = "";
+    const status = document.getElementById("importLoreStatus");
+    if (status) { status.textContent = ""; status.style.display = "none"; }
+    const btn = document.getElementById("confirmImportLoreBtn");
+    if (btn) { btn.style.display = "none"; btn.textContent = "确认导入"; }
+    const nameEl = document.getElementById("importLoreWorldName");
+    if (nameEl) nameEl.textContent = currentWorld.name;
+    // 重置选项为默认值
+    const m = document.querySelector('input[name="loreMode"][value="append"]');
+    if (m) m.checked = true;
+    const c = document.querySelector('input[name="loreCopyright"][value="safe"]');
+    if (c) c.checked = true;
+    updateLoreCopyrightHint();
+    window.__pendingImportSnips = null;
+    showModal("importLoreModal");
+}
+
+// 根据版权 radio 切换提示文案与颜色
+function updateLoreCopyrightHint() {
+    const el = document.querySelector('input[name="loreCopyright"]:checked');
+    const hint = document.getElementById("loreCopyrightHint");
+    if (!hint) return;
+    if (el && el.value === "copyrighted") {
+        hint.textContent = "受版权 IP：导入的知识仅限本机自用，请勿分享、导出或存为可分享预设。";
+        hint.style.color = "#c0392b";
+    } else {
+        hint.textContent = "公版 IP 或原创设定可分享给他人；预设库仅收录此类。";
+        hint.style.color = "";
+    }
+}
+
+async function runExtractLore() {
+    const ta = document.getElementById("importLoreText");
+    const text = ta ? ta.value.trim() : "";
+    if (!text) { showToast("请先粘贴原著/世界观文本", "error"); return; }
+    const status = document.getElementById("importLoreStatus");
+    const btn = document.getElementById("confirmImportLoreBtn");
+    const preview = document.getElementById("importLorePreview");
+    if (btn) btn.style.display = "none";
+    if (status) { status.textContent = "正在抽取设定..."; status.style.display = ""; }
+    try {
+        const snips = await extractLoreFromText(text, currentWorld.name);
+        if (!Array.isArray(snips) || snips.length === 0) {
+            if (status) status.textContent = "未抽取到有效片段，请检查文本或模型配置。";
+            return;
+        }
+        if (preview) {
+            preview.innerHTML = snips.map(function (s) {
+                const c = (s.content || "");
+                return '<div class="lore-prev-item"><span class="lore-prev-cat">' + escapeHtml(s.category || "设定") + '</span> <b>' + escapeHtml(s.title || "未命名") + '</b>'
+                    + '<div class="lore-prev-content">' + escapeHtml(c.slice(0, 120)) + (c.length > 120 ? "…" : "") + '</div></div>';
+            }).join("");
+        }
+        if (status) status.textContent = "抽取到 " + snips.length + " 条片段，确认后导入到知识库。";
+        window.__pendingImportSnips = snips;
+        if (btn) { btn.style.display = ""; btn.textContent = "确认导入 " + snips.length + " 条"; }
+    } catch (e) {
+        if (status) status.textContent = "抽取失败：" + e.message;
+    }
+}
+
+async function confirmImportLore() {
+    const snips = window.__pendingImportSnips;
+    if (!snips || !snips.length) { showToast("没有可导入的片段", "error"); return; }
+    const derived = ensureEditableWorld();
+    if (!currentWorld.lore_kb) currentWorld.lore_kb = { ip: currentWorld.name, snippets: [] };
+    if (!Array.isArray(currentWorld.lore_kb.snippets)) currentWorld.lore_kb.snippets = [];
+
+    // 读取导入模式：追加去重 / 覆盖同类 / 完全覆盖
+    const modeEl = document.querySelector('input[name="loreMode"]:checked');
+    const mode = modeEl ? modeEl.value : "append";
+    let merged;
+    if (mode === "overwrite") {
+        merged = overwriteLoreSnippets(snips);
+    } else if (mode === "category") {
+        merged = replaceLoreByCategory(currentWorld.lore_kb.snippets, snips);
+    } else {
+        merged = mergeLoreSnippets(currentWorld.lore_kb.snippets, snips);
+    }
+    currentWorld.lore_kb.snippets = merged;
+    if (!currentWorld.lore_kb.ip) currentWorld.lore_kb.ip = currentWorld.name;
+
+    // 读取版权状态：safe（可分享）/ copyrighted（仅本地自用）
+    const crEl = document.querySelector('input[name="loreCopyright"]:checked');
+    const cr = crEl ? crEl.value : "safe";
+    currentWorld.lore_copyright = cr;
+    currentWorld.local_only = (cr === "copyrighted");
+
+    currentWorld.imported_lore = true;
+    saveWorlds();
+    if (typeof computeEmbeddingsForWorld === "function") {
+        try { await computeEmbeddingsForWorld(currentWorld); saveWorlds(); }
+        catch (e) { console.warn("embedding 重算失败(可忽略):", e.message); }
+    }
+    const crTip = (cr === "copyrighted") ? "（受版权·仅本地自用）" : "";
+    showToast("已导入 " + snips.length + " 条设定到知识库" + (derived ? "（副本）" : "") + crTip, "success", 3000);
+    window.__pendingImportSnips = null;
+    closeModal("importLoreModal");
+}
+
+/* ================= 玩家世界书：手动策展 lore / 常量记忆 ================= */
+function openWorldBookModal() {
+    if (!currentWorld) return;
+    ensureEditableWorld(); // 预设世界自动派生副本，防止污染写死 canon
+    const nm = document.getElementById("worldBookName");
+    if (nm) nm.textContent = currentWorld.name;
+    window.__wbEdit = null;
+    renderWorldBook();
+    showModal("worldBookModal");
+}
+
+/* ================= D 分支快照（多时间线存档）UI ================= */
+function openSnapshotModal() {
+    if (!currentWorld) { showToast("请先进入一个世界", "error"); return; }
+    const nm = document.getElementById("snapshotWorldName");
+    if (nm) nm.textContent = currentWorld.name;
+    const inp = document.getElementById("snapshotLabelInput");
+    if (inp) inp.value = "";
+    renderSnapshots();
+    showModal("snapshotModal");
+}
+
+function renderSnapshots() {
+    const list = document.getElementById("snapshotList");
+    if (!list) return;
+    const mine = getSnapshotsForWorld(snapshots, currentWorld ? currentWorld.id : null);
+    if (!mine.length) {
+        list.innerHTML = '<div class="empty-hint">还没有任何分支快照。在关键抉择前拍一张，之后可随时回到此处「分叉」出不同时间线。</div>';
+        return;
+    }
+    list.innerHTML = mine.map(function (s) {
+        const t = (s.createdAt ? new Date(s.createdAt) : new Date()).toLocaleString("zh-CN", { hour12: false });
+        const prog = s.progress ? ' · ' + escapeHtml(s.progress) : '';
+        return '<div class="status-card" style="margin-bottom:10px;">' +
+            '<div class="row"><span class="label">' + escapeHtml(s.label) + '</span></div>' +
+            '<div class="text-block" style="font-size:11px;color:var(--text-muted)">' + t + prog + '</div>' +
+            '<div style="margin-top:8px;display:flex;gap:8px;">' +
+            '<button class="btn primary tiny" onclick="doLoadSnapshot(\'' + s.id.replace(/'/g, "\\'") + '\')">载入此分支</button>' +
+            '<button class="btn ghost tiny" onclick="doDeleteSnapshot(\'' + s.id.replace(/'/g, "\\'") + '\')">删除</button>' +
+            '</div></div>';
+    }).join("");
+}
+
+/* ================= E 项：导出故事 ================= */
+function openExportModal() {
+    if (!currentWorld) { showToast("请先进入一个世界", "error"); return; }
+    const md = buildStoryExport(currentWorld, gameState || {}, conversationHistory, chatSummary || [], {});
+    window.__exportMarkdown = md;
+    const ta = document.getElementById("exportPreview");
+    if (ta) ta.value = md;
+    const nm = document.getElementById("exportWorldName");
+    if (nm) nm.textContent = currentWorld.name;
+    const cnt = document.getElementById("exportWordCount");
+    if (cnt) cnt.textContent = (md.length || 0) + " 字";
+    showModal("exportStoryModal");
+}
+
+function doExportDownload() {
+    const md = window.__exportMarkdown || "";
+    if (!md) { showToast("没有可导出的内容", "error"); return; }
+    const name = (currentWorld && currentWorld.name ? currentWorld.name : "story").replace(/[\\/:*?"<>|]/g, "_");
+    const blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name + "_冒险纪事.md";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    showToast("已下载 Markdown 文件", "success");
+}
+
+function doExportCopy() {
+    const md = window.__exportMarkdown || "";
+    if (!md) { showToast("没有可复制的内容", "error"); return; }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(md).then(function () { showToast("已复制到剪贴板", "success"); }, function () { fallbackCopy(md); });
+    } else {
+        fallbackCopy(md);
+    }
+}
+
+function fallbackCopy(text) {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand("copy"); showToast("已复制到剪贴板", "success"); }
+    catch (e) { showToast("复制失败，请手动选择", "error"); }
+    document.body.removeChild(ta);
+}
+
+function doTakeSnapshot() {
+    if (!currentWorld || !gameState) return;
+    const inp = document.getElementById("snapshotLabelInput");
+    const label = inp ? inp.value.trim() : "";
+    const progress = "第 " + (gameState.current_date ? gameState.current_date.day : 1) + " 天 · " +
+        getPeriodLabel(gameState.current_date ? gameState.current_date.period : "day");
+    snapshots = takeSnapshot(snapshots, currentWorld.id, currentWorld.name, {
+        gameState: gameState,
+        currentWorld: currentWorld,
+        conversationHistory: conversationHistory,
+        chatHistory: chatHistory,
+        chatSummary: chatSummary
+    }, { label: label, progress: progress });
+    saveSnapshots();
+    renderSnapshots();
+    showToast("已拍摄分支快照" + (label ? "：" + label : ""), "success");
+}
+
+function doLoadSnapshot(id) {
+    const snap = getSnapshotById(snapshots, id);
+    if (!snap) { showToast("快照不存在", "error"); return; }
+    const live = buildLiveStateFromSnapshot(snap);
+    if (!live) return;
+    gameState = live.gameState;
+    // 用快照中的世界对象替换 worlds[] 内对应项，保持 currentWorld 引用一致
+    const idx = worlds.findIndex(function (w) { return w.id === snap.worldId; });
+    if (idx >= 0) worlds[idx] = live.currentWorld; else worlds.push(live.currentWorld);
+    currentWorld = live.currentWorld;
+    conversationHistory = live.conversationHistory;
+    chatHistory = live.chatHistory;
+    chatSummary = live.chatSummary;
+    // 落盘：world（含快照中的商店/任务板/行为记录）+ 自动存档（从分叉点继续写）
+    saveWorlds();
+    if (typeof createOrUpdateSave === "function") createOrUpdateSave();
+    closeModal("snapshotModal");
+    // 重建叙事面板与世界/状态面板，呈现分叉后的时间线
+    renderLog(true);
+    renderStatusPanel(currentStatusTab);
+    showToast("已载入分支：" + snap.label, "success");
+}
+
+function doDeleteSnapshot(id) {
+    snapshots = deleteSnapshot(snapshots, id);
+    saveSnapshots();
+    renderSnapshots();
+    showToast("已删除该分支快照", "info");
+}
+
+function renderWorldBook() {
+    const loreList = document.getElementById("wbLoreList");
+    const factList = document.getElementById("wbFactList");
+    if (loreList) loreList.innerHTML = renderWbLoreList();
+    if (factList) factList.innerHTML = renderWbFactList();
+}
+
+function renderWbLoreList() {
+    const snips = (currentWorld.lore_kb && currentWorld.lore_kb.snippets) || [];
+    if (!snips.length) return '<div class="empty-hint">还没有知识片段，点「＋ 新增片段」添加。</div>';
+    return snips.map(function (s) {
+        const id = s.id;
+        return '<div class="status-card">'
+            + '<div style="display:flex;align-items:center;"><span class="lore-prev-cat">' + escapeHtml(s.category || "设定") + '</span> <b>' + escapeHtml(s.title || "未命名") + '</b>'
+            + '<span style="margin-left:auto;"><button class="btn ghost tiny" onclick="wbEditLore(\'' + id + '\')">编辑</button> '
+            + '<button class="btn ghost tiny" onclick="wbDeleteLore(\'' + id + '\')">删除</button></span></div>'
+            + '<div class="text-block" style="font-size:12px;color:var(--text-muted);">' + escapeHtml((s.content || "").slice(0, 160)) + ((s.content || "").length > 160 ? "…" : "") + '</div>'
+            + (s.keywords && s.keywords.length ? '<div class="wb-kw">关键词：' + s.keywords.map(function (k) { return escapeHtml(k); }).join(" · ") + '</div>' : '')
+            + '</div>';
+    }).join("");
+}
+
+function renderWbFactList() {
+    const facts = (currentWorld.pinned_facts || []).filter(function (p) { return p.status !== "resolved"; });
+    if (!facts.length) return '<div class="empty-hint">还没有常量记忆，点「＋ 新增事实」添加（如「主角的剑永不锈蚀」）。</div>';
+    return facts.map(function (p) {
+        const src = p.source === "ai" ? "AI 标注" : p.source === "state" ? "状态信号" : "手动";
+        return '<div class="status-card">'
+            + '<div style="display:flex;align-items:center;"><span class="text-block" style="flex:1;margin:0;">' + escapeHtml(p.text) + '</span>'
+            + '<span style="margin-left:8px;"><button class="btn ghost tiny" onclick="wbEditFact(\'' + p.id + '\')">编辑</button> '
+            + '<button class="btn ghost tiny" onclick="wbDeleteFact(\'' + p.id + '\')">删除</button></span></div>'
+            + '<div class="text-block" style="font-size:11px;color:var(--text-muted);">来源：' + src + '</div>'
+            + '</div>';
+    }).join("");
+}
+
+function wbNewLore() { window.__wbEdit = { type: "lore" }; showWbEditor(); }
+function wbEditLore(id) { window.__wbEdit = { type: "lore", id: id }; showWbEditor(); }
+function wbNewFact() { window.__wbEdit = { type: "fact" }; showWbEditor(); }
+function wbEditFact(id) { window.__wbEdit = { type: "fact", id: id }; showWbEditor(); }
+
+function showWbEditor() {
+    const box = document.getElementById("wbEditor");
+    if (!box) return;
+    const ed = window.__wbEdit || {};
+    let html = '';
+    if (ed.type === "lore") {
+        const s = ed.id ? (currentWorld.lore_kb.snippets || []).find(function (x) { return x.id === ed.id; }) : null;
+        const CATS = ["背景", "事件", "人物", "势力", "冲突", "规则", "地点", "物品", "原文", "设定"];
+        html = '<div class="wb-form">'
+            + '<div style="display:flex;gap:8px;flex-wrap:wrap;">'
+            + '<label style="font-size:12px;">分类<br><select id="wbCat">' + CATS.map(function (c) { return '<option' + (s && s.category === c ? ' selected' : '') + '>' + c + '</option>'; }).join("") + '</select></label>'
+            + '<label style="font-size:12px;flex:1;min-width:200px;">标题<br><input id="wbTitle" style="width:100%;box-sizing:border-box;" value="' + escapeHtml(s ? s.title : '') + '"></label>'
+            + '</div>'
+            + '<label style="font-size:12px;display:block;margin-top:6px;">内容（100-300 字）<br><textarea id="wbContent" style="width:100%;min-height:80px;box-sizing:border-box;">' + escapeHtml(s ? (s.content || '') : '') + '</textarea></label>'
+            + '<label style="font-size:12px;display:block;margin-top:6px;">关键词（逗号/顿号分隔）<br><input id="wbKw" style="width:100%;box-sizing:border-box;" value="' + escapeHtml(s && s.keywords ? s.keywords.join(",") : '') + '"></label>'
+            + '<div style="margin-top:8px;"><button class="btn primary tiny" onclick="wbSaveEditor()">保存</button> <button class="btn ghost tiny" onclick="wbCancelEditor()">取消</button></div>'
+            + '</div>';
+    } else if (ed.type === "fact") {
+        const p = ed.id ? (currentWorld.pinned_facts || []).find(function (x) { return x.id === ed.id; }) : null;
+        html = '<div class="wb-form">'
+            + '<label style="font-size:12px;display:block;">常量事实（一句话铁律，永不褪色）<br><textarea id="wbFactText" style="width:100%;min-height:60px;box-sizing:border-box;">' + escapeHtml(p ? (p.text || '') : '') + '</textarea></label>'
+            + '<div style="margin-top:8px;"><button class="btn primary tiny" onclick="wbSaveEditor()">保存</button> <button class="btn ghost tiny" onclick="wbCancelEditor()">取消</button></div>'
+            + '</div>';
+    }
+    box.innerHTML = html;
+    box.style.display = "block";
+}
+
+function wbCancelEditor() {
+    window.__wbEdit = null;
+    const box = document.getElementById("wbEditor");
+    if (box) { box.style.display = "none"; box.innerHTML = ""; }
+}
+
+async function wbSaveEditor() {
+    const ed = window.__wbEdit;
+    if (!ed) return;
+    if (ed.type === "lore") {
+        const cat = (document.getElementById("wbCat") || {}).value || "设定";
+        const title = (document.getElementById("wbTitle") || {}).value || "";
+        const content = (document.getElementById("wbContent") || {}).value || "";
+        const kwRaw = (document.getElementById("wbKw") || {}).value || "";
+        if (!title.trim()) { showToast("标题不能为空", "error"); return; }
+        const item = {
+            category: cat,
+            title: title.trim(),
+            content: content.trim(),
+            keywords: kwRaw.split(/[，,、\s]+/).filter(Boolean)
+        };
+        if (ed.id) {
+            currentWorld.lore_kb.snippets = updateLoreSnippet(currentWorld.lore_kb.snippets, ed.id, item);
+        } else {
+            if (!currentWorld.lore_kb) currentWorld.lore_kb = { ip: currentWorld.name, snippets: [] };
+            currentWorld.lore_kb.snippets = addLoreSnippet(currentWorld.lore_kb.snippets, item);
+        }
+        if (!currentWorld.lore_kb.ip) currentWorld.lore_kb.ip = currentWorld.name;
+        currentWorld.manual_lore = true;
+    } else if (ed.type === "fact") {
+        const text = (document.getElementById("wbFactText") || {}).value || "";
+        if (!text.trim()) { showToast("事实不能为空", "error"); return; }
+        if (ed.id) {
+            currentWorld.pinned_facts = upsertPinnedFact(currentWorld.pinned_facts, { id: ed.id, text: text.trim() });
+        } else {
+            currentWorld.pinned_facts = upsertPinnedFact(currentWorld.pinned_facts, { text: text.trim(), source: "manual" });
+        }
+        currentWorld.manual_fact = true;
+    }
+    saveWorlds();
+    if (typeof computeEmbeddingsForWorld === "function") {
+        try { await computeEmbeddingsForWorld(currentWorld); saveWorlds(); }
+        catch (e) { console.warn("embedding 重算失败(可忽略):", e.message); }
+    }
+    wbCancelEditor();
+    renderWorldBook();
+    showToast("已保存世界书修改", "success", 2000);
+}
+
+function wbDeleteLore(id) {
+    currentWorld.lore_kb.snippets = removeLoreSnippet(currentWorld.lore_kb.snippets, id);
+    saveWorlds();
+    renderWorldBook();
+}
+
+function wbDeleteFact(id) {
+    currentWorld.pinned_facts = removePinnedFact(currentWorld.pinned_facts, id);
+    saveWorlds();
+    renderWorldBook();
 }
 
 function showWorldDetail(worldId) {
@@ -1596,6 +1911,11 @@ function showWorldDetail(worldId) {
             <label>世界类型</label>
             <p style="margin:0;font-size:15px;">${currentWorld.type === "ip" ? "基于已有 IP / 小说" : "原创世界观"}</p>
         </div>
+        ${currentWorld.lore_copyright ? `
+        <div class="form-group">
+            <label>版权状态</label>
+            <p style="margin:0;font-size:14px;${currentWorld.local_only ? "color:#c0392b;" : "color:#27ae60;"}">${currentWorld.local_only ? "受版权 IP · 仅限本地自用，请勿分享或导出" : "公版 / 原创 · 允许分享"}</p>
+        </div>` : ""}
         ${currentWorld.ip_name ? `
         <div class="form-group">
             <label>作品名称</label>
@@ -1605,11 +1925,11 @@ function showWorldDetail(worldId) {
             <label>世界观描述</label>
             <p style="margin:0;font-size:14px;line-height:1.6;color:var(--text-secondary);">${currentWorld.desc}</p>
         </div>
-        ${currentWorld.hero ? `
         <div class="form-group">
-            <label>主角设定</label>
-            <p style="margin:0;font-size:14px;line-height:1.6;color:var(--text-secondary);">${currentWorld.hero}</p>
-        </div>` : ""}
+            <label>主角设定（进入世界前可填写 / 修改）</label>
+            <textarea id="heroDescEdit" placeholder="例如：一名来自小镇的少年，性格谨慎，渴望变强；或留空由 AI 设计主角..." style="min-height:72px;">${escapeHtml(currentWorld.hero || "")}</textarea>
+            <div class="hint">这里设定「你」在这个世界里的身份与背景。创建世界时无需填写，进入前在此补全即可；留空则交由 AI 设计主角。</div>
+        </div>
         <div class="form-group">
             <label>进度系统</label>
             <p style="margin:0;font-size:14px;color:var(--text-secondary);">${schema.progression_path_label} / ${schema.progression_label}</p>
@@ -1643,6 +1963,11 @@ function showWorldDetail(worldId) {
             <label>特殊要求</label>
             <p style="margin:0;font-size:14px;line-height:1.6;color:var(--text-secondary);">${escapeHtml(currentWorld.custom_prefix)}</p>
         </div>` : ""}
+        ${currentWorld.tone ? `
+        <div class="form-group">
+            <label>叙事基调</label>
+            <p style="margin:0;font-size:14px;color:var(--text-secondary);">${currentWorld.tone.primary}${(currentWorld.tone.labels && currentWorld.tone.labels.length > 1) ? "（" + currentWorld.tone.labels.join(" / ") + "）" : ""}${currentWorld.tone.description ? " — " + currentWorld.tone.description : ""}</p>
+        </div>` : ""}
         ${currentWorld.source_content ? `
         <div class="form-group">
             <label>源文件</label>
@@ -1656,6 +1981,19 @@ async function startGame() {
     closeModal("worldDetailModal");
     if (!currentWorld) return;
     stopTypewriter();
+
+    // G1 性能优化：进入世界时按需惰性重算 embedding（fire-and-forget，不阻塞开场）。
+    // 仅对当前 world 重算，且 computeEmbeddingsForWorld 内部会跳过「内容未变」的片段。
+    if (typeof computeEmbeddingsForWorld === "function") {
+        computeEmbeddingsForWorld(currentWorld)
+            .catch(function (e) { console.warn("embedding 重算失败(可忽略):", e && e.message); })
+            .then(function () { if (typeof saveWorlds === "function") saveWorlds(); });
+    }
+
+    // ★ 主角设定：进入世界前在世界详情弹窗填写，这里读取并写入世界（玩家留空则保留旧值/交 AI 设计）
+    const heroEditEl = document.getElementById("heroDescEdit");
+    currentWorld.hero = heroEditEl ? (heroEditEl.value.trim() || currentWorld.hero) : currentWorld.hero;
+    saveWorlds();
 
     // 加载该世界的初始状态
     if (currentWorld.initial_state) {
@@ -1671,6 +2009,7 @@ async function startGame() {
     chatHistory = [];  // ★ 开场白已注入 system prompt，chatHistory 从空开始
     chatSummary = [];
     saveState();
+    renderScenePanel();
 
     showScreen("gameScreen");
     document.getElementById("gameWorldName").textContent = currentWorld.name;
@@ -1709,6 +2048,57 @@ async function startGame() {
     }
 }
 
+// ★ 编辑主角：游戏中随时可设定 / 修改主角身份与背景（满足「每次都能设定主角」）
+function openHeroEdit() {
+    if (!currentWorld) return;
+    const el = document.getElementById("heroEditInput");
+    if (el) el.value = currentWorld.hero || "";
+    showModal("heroEditModal");
+}
+function saveHeroEdit() {
+    if (!currentWorld) return;
+    const el = document.getElementById("heroEditInput");
+    currentWorld.hero = el ? (el.value.trim() || "") : currentWorld.hero;
+    saveWorlds();
+    invalidateSystemPromptCache(); // 主角设定影响 system prompt，强制刷新缓存
+    // 立即把最新主角设定同步进存档对象，使「存档列表」立刻可见（满足需求：存档处能看到主角信息）
+    if (typeof createOrUpdateSave === "function") createOrUpdateSave();
+    closeModal("heroEditModal");
+    showToast("主角设定已更新", "success");
+}
+
+// ★ 每个遇到的 NPC 都可设定人物卡（外貌/性格/描述/备注），存入 npc_states[name].card
+let currentNpcCardName = "";
+function editNpcCard(name) {
+    if (!gameState) return;
+    currentNpcCardName = name;
+    const ns = (gameState.npc_states && gameState.npc_states[name]) || {};
+    const card = ns.card || {};
+    document.getElementById("npcCardTitle").textContent = "人物卡 · " + name;
+    document.getElementById("npcCardAppearance").value = card.appearance || "";
+    document.getElementById("npcCardTraits").value = card.traits || "";
+    document.getElementById("npcCardDesc").value = card.desc || "";
+    document.getElementById("npcCardNote").value = card.note || "";
+    showModal("npcCardModal");
+}
+function saveNpcCard() {
+    if (!gameState || !currentNpcCardName) return;
+    if (!gameState.npc_states) gameState.npc_states = {};
+    if (!gameState.npc_states[currentNpcCardName]) gameState.npc_states[currentNpcCardName] = {};
+    const ns = gameState.npc_states[currentNpcCardName];
+    ns.card = {
+        appearance: document.getElementById("npcCardAppearance").value.trim(),
+        traits: document.getElementById("npcCardTraits").value.trim(),
+        desc: document.getElementById("npcCardDesc").value.trim(),
+        note: document.getElementById("npcCardNote").value.trim()
+    };
+    closeModal("npcCardModal");
+    saveState();
+    saveWorlds();
+    if (typeof currentStatusTab !== "undefined") renderStatusPanel(currentStatusTab);
+    showToast("人物卡已保存", "success");
+}
+
 function defaultInitialState() {
     return {
         name: "玩家",
@@ -1726,6 +2116,11 @@ function defaultInitialState() {
         relationships: {},
         skills: {},
         inventory: [],
+        factions: {},
+        active_quests: [],
+        currency: { gold: 0 },
+        crafting_recipes: [],
+        equipped: {},
         completed_events: [],
         current_location: "初始地点",
         current_date: { day: 1, period: "morning" },
@@ -1792,6 +2187,12 @@ function loadSave(saveId) {
 
     // ★ CRPG: 渲染地图和动作菜单
     if (gameState.current_map && typeof TileMap !== "undefined") {
+        // 旧存档可能没有 explored 网格：若世界开启迷雾则补初始化（按玩家起点揭示）
+        if (currentWorld && currentWorld.fog_of_war !== false
+            && gameState.current_map.explored === undefined
+            && typeof initFog === "function") {
+            initFog(gameState.current_map);
+        }
         TileMap.render(gameState.current_map);
     }
     if (typeof ActionMenu !== "undefined") {
@@ -1851,6 +2252,7 @@ function createOrUpdateSave() {
     const cleanHistoryStr = JSON.stringify(cleanHistory);
     if (existing) {
         existing.progress = progress; existing.updatedAt = now;
+        existing.hero = currentWorld.hero || "";
         existing.state = JSON.parse(stateStr);
         existing.history = JSON.parse(cleanHistoryStr);
         existing.chatHistory = cleanChat;
@@ -1858,7 +2260,7 @@ function createOrUpdateSave() {
     } else {
         saves.unshift({
             id: "s" + Date.now(), worldId: currentWorld.id, worldName: currentWorld.name,
-            progress, updatedAt: now,
+            progress, updatedAt: now, hero: currentWorld.hero || "",
             state: JSON.parse(stateStr), history: JSON.parse(cleanHistoryStr), chatHistory: cleanChat,
             chatSummary: [...chatSummary]
         });
@@ -1892,19 +2294,15 @@ function closeStatusPanel(event) {
 function renderStatusTabs() {
     const schema = getWorldSchema(currentWorld);
     const tabs = [
-        { key: "profile", label: "属性" },
-        { key: "background", label: "背景" },
-        { key: "state", label: "状态" },
+        { key: "profile", label: "角色" },
         { key: "relations", label: "关系" },
-        { key: "items", label: "物品" }
+        { key: "items", label: "收集" },
+        { key: "factions", label: "势力" },
+        { key: "goals", label: "目标" },
+        { key: "story", label: "剧情" },
+        { key: "memory", label: "记忆" },
+        { key: "world", label: "世界" }
     ];
-    if (schema.has_skills) {
-        tabs.push({ key: "skills", label: schema.skill_label || "技能" });
-    }
-    tabs.push({ key: "goals", label: "目标" });
-    tabs.push({ key: "npc", label: "NPC" });
-    tabs.push({ key: "world", label: "世界动态" });
-    tabs.push({ key: "log", label: "抉择" });
 
     document.getElementById("statusTabs").innerHTML = tabs.map(t => `
         <button class="status-tab ${currentStatusTab === t.key ? "active" : ""}" onclick="switchStatusTab('${t.key}')">${t.label}</button>
@@ -1962,11 +2360,17 @@ function renderStatusPanel(tab) {
                     </div>
                 </div>
                 <div class="status-section">
-                    <div class="status-section-title">属性</div>
-                    <div class="status-card">
+                    <div class="status-section-title">出身与性格</div>
+                    <div class="status-card text-block">${s.background || "（未设定）"}</div>
+                    <div class="status-tag-list" style="margin-top:8px;">${(s.personality || []).map(p => `<span class="status-tag">${p}</span>`).join("") || '<span class="empty-hint" style="padding:0">未设置</span>'}</div>
+                    ${s.completed_events.length ? `<div class="status-tag-list" style="margin-top:8px;"><span style="font-size:11px;color:var(--text-muted);margin-right:4px;">已完成</span>${s.completed_events.map(e => `<span class="status-tag">${e}</span>`).join("")}</div>` : ""}
+                </div>
+                <details class="status-details">
+                    <summary>属性详情</summary>
+                    <div class="status-card" style="margin-top:8px;">
                         ${Object.entries(s.attributes).map(([k, v]) => renderTextAttribute(getAttributeLabel(k), v)).join("")}
                     </div>
-                </div>
+                </details>
                 <div class="status-section">
                     <div class="status-section-title">${schema.progression_label || "进度"}</div>
                     <div class="status-card">
@@ -1977,9 +2381,9 @@ function renderStatusPanel(tab) {
                     </div>
                 </div>
                 ${s.combat_stats ? `
-                <div class="status-section">
-                    <div class="status-section-title">战斗数值</div>
-                    <div class="status-card">
+                <details class="status-details">
+                    <summary>战斗数值</summary>
+                    <div class="status-card" style="margin-top:8px;">
                         <div class="row"><span class="label">等级</span><span class="value">Lv.${s.combat_stats.level} (${s.combat_stats.xp}/${s.combat_stats.xp_to_next} XP)</span></div>
                         <div class="stat-bar xp-bar"><div style="width:${s.combat_stats.xp_to_next > 0 ? s.combat_stats.xp / s.combat_stats.xp_to_next * 100 : 0}%; background: var(--primary);"></div></div>
                         <div class="row"><span class="label">生命值 HP</span><span class="value" style="color: var(--danger);">${s.combat_stats.hp} / ${s.combat_stats.max_hp}</span></div>
@@ -1988,11 +2392,6 @@ function renderStatusPanel(tab) {
                         <div class="stat-bar mp-bar"><div style="width:${s.combat_stats.max_mp > 0 ? s.combat_stats.mp / s.combat_stats.max_mp * 100 : 0}%; background: #6BA4D4;"></div></div>
                         <div class="row"><span class="label">护甲 AC</span><span class="value">${s.combat_stats.ac}</span></div>
                         ${s.combat_stats.in_combat ? '<div class="row"><span class="label" style="color: var(--danger);">状态</span><span class="value" style="color: var(--danger);">战斗中</span></div>' : ''}
-                    </div>
-                </div>
-                <div class="status-section">
-                    <div class="status-section-title">D20 属性</div>
-                    <div class="status-card">
                         ${['strength','dexterity','constitution','intelligence','wisdom','charisma'].map(k => {
                             const attr = s.combat_stats[k];
                             const labels = { strength: '力量 STR', dexterity: '敏捷 DEX', constitution: '体质 CON', intelligence: '智力 INT', wisdom: '感知 WIS', charisma: '魅力 CHA' };
@@ -2000,47 +2399,15 @@ function renderStatusPanel(tab) {
                             const mod = attr.mod >= 0 ? '+' + attr.mod : attr.mod;
                             return '<div class="row"><span class="label">' + labels[k] + '</span><span class="value">' + attr.value + ' (' + mod + ')</span></div>';
                         }).join('')}
+                        ${(s.equipped && (s.equipped.weapon || s.equipped.armor || s.equipped.accessory)) ? '<div class="status-section-title" style="margin-top:10px;font-size:12px;">已装备</div>' + ['weapon','armor','accessory'].filter(function(slot){ return s.equipped[slot]; }).map(function(slot){
+                            const it = s.inventory.find(function(i){ return i.item_id === s.equipped[slot]; });
+                            if (!it) return '';
+                            const bonus = (slot==='weapon' && it.damage_bonus ? ' 伤害+'+it.damage_bonus : '') + (slot==='armor' && it.ac_bonus ? ' 防御+'+it.ac_bonus : '');
+                            const slotName = { weapon:'武器', armor:'护甲', accessory:'饰品' }[slot];
+                            return '<div class="row"><span class="label">'+slotName+'</span><span class="value">'+it.name+(bonus?bonus:'')+'</span></div>';
+                        }).join('') : ''}
                     </div>
-                </div>
-                ` : ''}
-            `;
-            break;
-
-        case "background":
-            container.innerHTML = `
-                <div class="status-section">
-                    <div class="status-section-title">出身背景</div>
-                    <div class="status-card text-block">${s.background}</div>
-                </div>
-                <div class="status-section">
-                    <div class="status-section-title">性格</div>
-                    <div class="status-card">
-                        <div class="status-tag-list">
-                            ${(s.personality || []).map(p => `<span class="status-tag">${p}</span>`).join("") || '<span class="empty-hint" style="padding:0">未设置</span>'}
-                        </div>
-                    </div>
-                </div>
-                <div class="status-section">
-                    <div class="status-section-title">已完成事件</div>
-                    <div class="status-card">
-                        <div class="status-tag-list">
-                            ${s.completed_events.length ? s.completed_events.map(e => `<span class="status-tag">${e}</span>`).join("") : '<span class="empty-hint" style="padding:0">暂无</span>'}
-                        </div>
-                    </div>
-                </div>
-            `;
-            break;
-
-        case "state":
-            container.innerHTML = `
-                <div class="status-section">
-                    <div class="status-section-title">当前状态</div>
-                    <div class="status-card">
-                        <div class="row"><span class="label">地点</span><span class="value">${s.current_location}</span></div>
-                        <div class="row"><span class="label">时间</span><span class="value">第 ${s.current_date.day} 天 · ${getPeriodLabel(s.current_date.period)}</span></div>
-                        <div class="row"><span class="label">${schema.progression_label || "等级"}</span><span class="value">${s.progression.rank}</span></div>
-                    </div>
-                </div>
+                </details>` : ''}
                 <div class="status-section">
                     <div class="status-section-title">声望与张力</div>
                     <div class="status-card">
@@ -2060,49 +2427,137 @@ function renderStatusPanel(tab) {
             break;
 
         case "relations":
-            const relEntries = Object.entries(s.relationships);
-            container.innerHTML = `
-                <div class="status-section">
-                    <div class="status-section-title">人物关系</div>
-                    ${relEntries.length ? relEntries.map(([name, value]) => `
-                        <div class="status-card">
-                            <div class="row"><span class="label">${name}</span></div>
-                            <div class="text-block">${renderTextValue(value)}</div>
-                        </div>
-                    `).join("") : '<div class="empty-hint">暂无人物关系</div>'}
-                </div>
-            `;
+            {
+                const relEntries = Object.entries(s.relationships);
+                const npcEntries = Object.entries(s.npc_states || {});
+                container.innerHTML = `
+                    ${relEntries.length ? `
+                    <div class="status-section">
+                        <div class="status-section-title">人物关系</div>
+                        ${relEntries.map(([name, value]) => `
+                            <div class="status-card">
+                                <div class="row"><span class="label">${name}</span></div>
+                                <div class="text-block">${renderTextValue(value)}</div>
+                            </div>
+                        `).join("")}
+                    </div>` : ''}
+                    <div class="status-section">
+                        <div class="status-section-title">NPC 档案</div>
+                        ${npcEntries.length ? npcEntries.map(([name, ns]) => {
+                            const a = typeof ns.attitude === "number" ? ns.attitude : null;
+                            const pct = a !== null ? Math.max(0, Math.min(100, (a + 100) / 2)) : 50;
+                            const barColor = a !== null && a < 0 ? "var(--danger)" : "var(--primary)";
+                            const card = ns.card || {};
+                            const hasCard = card.desc || card.traits || card.appearance || card.note;
+                            return `<div class="status-card">
+                                <div class="row"><span class="label">${name}</span><span class="value">${a !== null ? tierLabel(attitudeTier(a)) + " (" + a + ")" : "—"}</span></div>
+                                ${a !== null ? `<div class="stat-bar"><div style="width:${pct}%;background:${barColor}"></div></div>` : ""}
+                                ${card.desc ? `<div class="text-block">${card.desc}</div>` : ""}
+                                ${card.traits ? `<div class="status-tag-list" style="margin-top:6px;"><span style="font-size:11px;color:var(--text-muted);margin-right:4px;">性格</span>${card.traits.split(/[,，]/).map(t=>`<span class="status-tag">${t.trim()}</span>`).join("")}</div>` : ""}
+                                ${card.appearance ? `<div class="text-block" style="font-size:12px;color:var(--text-muted)">外貌：${card.appearance}</div>` : ""}
+                                ${ns.mood ? `<div class="row"><span class="label">心情</span><span class="value">${ns.mood}</span></div>` : ""}
+                                ${ns.catchphrase ? `<div class="row"><span class="label">口头禅</span><span class="value">${ns.catchphrase}</span></div>` : ""}
+                                ${ns.secrets && ns.secrets.length ? `<div class="text-block" style="font-size:12px;color:var(--text-muted)">隐秘：${ns.secrets.join("；")}</div>` : ""}
+                                ${card.note ? `<div class="text-block" style="font-size:12px;color:var(--text-muted)">备注：${card.note}</div>` : ""}
+                                <button class="btn ghost tiny" style="margin-top:8px;" onclick="editNpcCard('${name.replace(/'/g, "\\'")}')">${hasCard ? "编辑人物卡" : "＋ 设定人物卡"}</button>
+                            </div>`;
+                        }).join("") : '<div class="empty-hint">暂无 NPC 档案</div>'}
+                    </div>`;
+            }
             break;
 
         case "items":
-            container.innerHTML = `
-                <div class="status-section">
-                    <div class="status-section-title">背包物品</div>
-                    ${s.inventory.length ? s.inventory.map(i => `
+            {
+                const skillEntries = Object.entries(s.skills || {});
+                const cur = s.currency || {};
+                const curEntries = Object.entries(cur).filter(e => e[1] > 0 || e[0] === "gold");
+                const equippedIds = s.equipped || {};
+                const TYPE_LABELS = { weapon: "武器", armor: "护甲", accessory: "饰品", consumable: "消耗", material: "材料", quest: "任务", other: "杂物" };
+                container.innerHTML = `
+                    <div class="status-section">
+                        <div class="status-section-title">货币</div>
                         <div class="status-card">
-                            <div class="row">
-                                <span class="label">${i.name}</span>
-                                <span class="value">x${i.count}</span>
-                            </div>
+                            ${curEntries.length ? curEntries.map(e => '<div class="row"><span class="label">' + currencyLabel(e[0]) + '</span><span class="value">×' + e[1] + '</span></div>').join("") : '<div class="empty-hint">身无分文</div>'}
                         </div>
-                    `).join("") : '<div class="empty-hint">背包空空如也</div>'}
-                </div>
-            `;
+                    </div>
+                    <div class="status-section">
+                        <div class="status-section-title">背包物品</div>
+                        ${s.inventory.length ? s.inventory.map(function(i) {
+                            const isEq = equippedIds[i.slot] === i.item_id;
+                            const typeTag = i.type ? '<span class="status-tag" style="margin-left:6px;">' + (TYPE_LABELS[i.type] || i.type) + '</span>' : '';
+                            const eqBtn = i.equippable ? '<button class="btn ghost tiny" style="margin-top:6px;" onclick="toggleEquip(\'' + i.item_id.replace(/'/g, "\\'") + '\')">' + (isEq ? "卸下" : "装备") + '</button>' : '';
+                            const bonus = (i.damage_bonus ? " 伤害+" + i.damage_bonus : "") + (i.ac_bonus ? " 防御+" + i.ac_bonus : "");
+                            return '<div class="status-card"><div class="row"><span class="label">' + i.name + (isEq ? ' <span style="color:var(--primary);font-size:11px;">[已装备]</span>' : '') + '</span><span class="value">×' + i.count + '</span></div>' + typeTag + (bonus ? '<div class="text-block" style="font-size:11px;color:var(--text-muted)">' + bonus.trim() + '</div>' : '') + (i.desc ? '<div class="text-block" style="font-size:11px;color:var(--text-muted)">' + i.desc + '</div>' : '') + eqBtn + '</div>';
+                        }).join("") : '<div class="empty-hint">背包空空如也</div>'}
+                    </div>
+                    <div class="status-section">
+                        <div class="status-section-title">⚒ 合成工坊（已知配方）</div>
+                        ${(s.crafting_recipes && s.crafting_recipes.length) ? s.crafting_recipes.map(function(r) {
+                            const inv = s.inventory || [];
+                            const ok = (r.inputs || []).every(function(req) { const h = inv.find(i => i.item_id === req.item_id); return h && h.count >= req.count; });
+                            const reqText = (r.inputs || []).map(function(req) { const h = inv.find(i => i.item_id === req.item_id); const have = h ? h.count : 0; return (req.name || req.item_id) + " " + have + "/" + req.count; }).join("，");
+                            const outText = r.output ? (r.output.name + " ×" + (r.output.count || 1)) : "—";
+                            return '<div class="status-card"><div class="row"><span class="label">' + r.name + '</span></div>' + (r.desc ? '<div class="text-block" style="font-size:11px;color:var(--text-muted)">' + r.desc + '</div>' : '') + '<div class="text-block" style="font-size:11px;">材料：' + (reqText || "无") + '<br>产出：' + outText + '</div><button class="btn ghost tiny" style="margin-top:6px;" ' + (ok ? 'onclick="doCraft(\'' + r.id.replace(/'/g, "\\'") + '\')"' : 'disabled style="opacity:.5;cursor:not-allowed;"') + '>' + (ok ? "合成" : "材料不足") + '</button></div>';
+                        }).join("") : '<div class="empty-hint">尚未习得任何配方（在剧情中探索制作法吧）</div>'}
+                    </div>
+                    <div class="status-section">
+                        <div class="status-section-title">🏪 商店（固定货架 / 定价）</div>
+                        ${(currentWorld && currentWorld.shops && currentWorld.shops.length) ? currentWorld.shops.map(function(sh) {
+                            const cur = sh.currency || 'gold';
+                            return '<div class="status-card"><div class="row"><span class="label">'+escapeHtml(sh.name)+'</span><span class="value">'+(sh.owner?escapeHtml(sh.owner):'—')+'</span></div>'+(sh.location?'<div class="text-block" style="font-size:11px;color:var(--text-muted)">位置：'+escapeHtml(sh.location)+' · 货币：'+currencyLabel(cur)+'</div>':'<div class="text-block" style="font-size:11px;color:var(--text-muted)">货币：'+currencyLabel(cur)+'</div>')+'<button class="btn ghost tiny" style="margin-top:6px;" onclick="openShopModal(\''+sh.id.replace(/'/g,"\\'")+'\')">浏览货架 / 交易</button></div>';
+                        }).join("") : '<div class="empty-hint">这个世界还没有开设店铺</div>'}
+                    </div>
+                    ${skillEntries.length ? `
+                    <div class="status-section">
+                        <div class="status-section-title">已掌握${schema.skill_label || "技能"}</div>
+                        ${skillEntries.map(([name, value]) => `
+                            <div class="status-card">
+                                <div class="row"><span class="label">${name}</span></div>
+                                <div class="text-block">${renderTextValue(value)}</div>
+                            </div>
+                        `).join("")}
+                    </div>` : ''}
+                `;
+            }
             break;
 
-        case "skills":
-            const skillEntries = Object.entries(s.skills || {});
-            container.innerHTML = `
-                <div class="status-section">
-                    <div class="status-section-title">已掌握${schema.skill_label || "技能"}</div>
-                    ${skillEntries.length ? skillEntries.map(([name, value]) => `
-                        <div class="status-card">
-                            <div class="row"><span class="label">${name}</span></div>
-                            <div class="text-block">${renderTextValue(value)}</div>
-                        </div>
-                    `).join("") : '<div class="empty-hint">尚未掌握' + (schema.skill_label || "技能") + '</div>'}
-                </div>
-            `;
+        case "factions":
+            {
+                const facs = s.factions || {};
+                const facEntries = Object.entries(facs);
+                container.innerHTML = `
+                    <div class="status-section">
+                        <div class="status-section-title">阵营声望</div>
+                        ${facEntries.length ? facEntries.map(function(e) {
+                            const name = e[0], f = e[1] || {};
+                            const rep = f.reputation || 0;
+                            const pct = Math.max(0, Math.min(100, (rep + 100) / 2));
+                            const stance = f.stance || "中立";
+                            const isFriend = (stance === "友善" || stance === "崇敬");
+                            const isHostile = (stance === "冷淡" || stance === "敌视");
+                            const color = isFriend ? "#3a9d5d" : isHostile ? "var(--danger)" : "var(--text-muted)";
+                            return '<div class="status-card"><div class="row"><span class="label">' + name + '</span><span class="value" style="color:' + color + '">' + stance + ' (' + rep + ')</span></div><div class="stat-bar"><div style="width:' + pct + '%;background:' + color + '"></div></div>' + (f.desc ? '<div class="text-block" style="font-size:11px;color:var(--text-muted)">' + f.desc + '</div>' : '') + '</div>';
+                        }).join("") : '<div class="empty-hint">尚未与任何势力产生交集</div>'}
+                    </div>
+                    <div class="status-section">
+                        <div class="status-section-title">📜 任务板（可接取）</div>
+                        ${(currentWorld && currentWorld.quest_board && currentWorld.quest_board.filter(function(q){return q.status==='open';}).length) ? currentWorld.quest_board.filter(function(q){return q.status==='open';}).map(function(q){
+                            const fac = q.faction ? ' <span class="status-tag">'+escapeHtml(q.faction)+'</span>' : '';
+                            const rew = [];
+                            if (q.reward && q.reward.currency) for (const c in q.reward.currency) rew.push(currencyLabel(c)+' +'+q.reward.currency[c]);
+                            if (q.reward && q.reward.reputation) for (const f in q.reward.reputation) rew.push(f+' 声望 +'+q.reward.reputation[f]);
+                            return '<div class="status-card"><div class="row"><span class="label">'+escapeHtml(q.title)+'</span></div>'+fac+(q.desc?'<div class="text-block" style="font-size:11px;color:var(--text-muted)">'+escapeHtml(q.desc)+'</div>':'')+(rew.length?'<div class="text-block" style="font-size:11px;">奖励：'+rew.join('，')+'</div>':'')+'<button class="btn ghost tiny" style="margin-top:6px;" onclick="acceptQuestFromBoard(\''+q.id.replace(/'/g,"\\'")+'\')">接受任务</button></div>';
+                        }).join("") : '<div class="empty-hint">暂无可接取的任务</div>'}
+                    </div>
+                    <div class="status-section">
+                        <div class="status-section-title">🎯 进行中任务</div>
+                        ${(s.active_quests && s.active_quests.length) ? s.active_quests.map(function(q){
+                            const isDone = q.status==='completed';
+                            const chk = (typeof checkQuestDeliver==='function') ? checkQuestDeliver(s, q) : {ok:true};
+                            return '<div class="status-card"><div class="row"><span class="label">'+escapeHtml(q.title)+(isDone?' <span style="color:var(--primary);font-size:11px;">[已完成]</span>':'')+'</span></div>'+(q.faction?'<div class="text-block" style="font-size:11px;color:var(--text-muted)">势力：'+escapeHtml(q.faction)+'</div>':'')+(q.desc?'<div class="text-block" style="font-size:11px;color:var(--text-muted)">'+escapeHtml(q.desc)+'</div>':'')+(!isDone?'<button class="btn ghost tiny" style="margin-top:6px;" '+(chk.ok?'onclick="turnInActiveQuest(\''+q.id.replace(/'/g,"\\'")+'\')"':'disabled style="opacity:.5;cursor:not-allowed;"')+'>'+(chk.ok?'交付 / 完成':'交付物不足')+'</button>':'')+'</div>';
+                        }).join("") : '<div class="empty-hint">尚无进行中的任务（去任务板接取吧）</div>'}
+                    </div>`;
+            }
             break;
 
         case "goals":
@@ -2122,30 +2577,6 @@ function renderStatusPanel(tab) {
             `;
             break;
 
-        case "npc":
-            {
-                const npcEntries = Object.entries(s.npc_states || {});
-                container.innerHTML = `
-                    <div class="status-section">
-                        <div class="status-section-title">NPC 档案</div>
-                        ${npcEntries.length ? npcEntries.map(([name, ns]) => {
-                            const a = typeof ns.attitude === "number" ? ns.attitude : null;
-                            const pct = a !== null ? Math.max(0, Math.min(100, (a + 100) / 2)) : 50;
-                            const barColor = a !== null && a < 0 ? "var(--danger)" : "var(--primary)";
-                            return `<div class="status-card">
-                                <div class="row"><span class="label">${name}</span><span class="value">${a !== null ? tierLabel(attitudeTier(a)) + " (" + a + ")" : "—"}</span></div>
-                                ${a !== null ? `<div class="stat-bar"><div style="width:${pct}%;background:${barColor}"></div></div>` : ""}
-                                ${ns.mood ? `<div class="row"><span class="label">心情</span><span class="value">${ns.mood}</span></div>` : ""}
-                                ${ns.catchphrase ? `<div class="row"><span class="label">口头禅</span><span class="value">${ns.catchphrase}</span></div>` : ""}
-                                ${ns.speech_style ? `<div class="text-block" style="font-size:12px;color:var(--text-muted)">${ns.speech_style}</div>` : ""}
-                                ${ns.secrets && ns.secrets.length ? `<div class="text-block" style="font-size:12px;color:var(--text-muted)">隐秘：${ns.secrets.join("；")}</div>` : ""}
-                                ${ns.schedule && Object.keys(ns.schedule).length ? `<div class="text-block" style="font-size:12px;color:var(--text-muted)">日常：${Object.entries(ns.schedule).map(([p,l]) => p + "在" + l).join("，")}</div>` : ""}
-                            </div>`;
-                        }).join("") : '<div class="empty-hint">暂无 NPC 档案</div>'}
-                    </div>`;
-            }
-            break;
-
         case "world":
             {
                 const evs = (currentWorld && currentWorld.current_world_events) || [];
@@ -2159,26 +2590,216 @@ function renderStatusPanel(tab) {
                             <div class="text-block">${leg.summary || "（暂无记载）"}</div>
                         </div>
                     </div>` : "";
+                const log = s.choice_log || [];
                 container.innerHTML = `
+                    <button class="btn ghost tiny" style="margin-bottom:10px;" onclick="openWorldBookModal()">📖 编辑世界书</button>
+                    <button class="btn ghost tiny" style="margin-bottom:10px;margin-left:6px;" onclick="openSnapshotModal()">🕰️ 分支快照 / 多时间线</button>
                     ${legendBlock}
                     <div class="status-section">
                         <div class="status-section-title">世界近期动态（世界脉搏）</div>
                         ${evs.length ? evs.slice().reverse().map(e => `<div class="status-card"><div class="row"><span class="label">[${e.type || "动态"}] 第${e.day}天</span></div><div class="text-block">${e.text}</div></div>`).join("") : '<div class="empty-hint">世界暂时风平浪静</div>'}
-                    </div>`;
-            }
-            break;
-
-        case "log":
-            {
-                const log = s.choice_log || [];
-                container.innerHTML = `
+                    </div>
                     <div class="status-section">
                         <div class="status-section-title">抉择日志（你做出的每个选择）</div>
                         ${log.length ? log.slice().reverse().map(c => `<div class="status-card"><div class="row"><span class="label">第${c.day}天</span></div><div class="text-block">${c.text}</div>${c.consequence ? `<div class="text-block" style="font-size:12px;color:var(--text-muted)">倾向：${c.consequence}</div>` : ""}</div>`).join("") : '<div class="empty-hint">你还没有做出选择</div>'}
                     </div>`;
             }
             break;
+
+        case "story":
+            {
+                const ca = (gameState && gameState.current_act) || (typeof computeCurrentAct === "function" ? computeCurrentAct() : { act: 1, title: "第一幕 · 启程", reason: "冒险刚刚开始" });
+                const acts = (gameState && gameState.acts_log ? gameState.acts_log.slice() : []).sort((a, b) => a.act - b.act);
+                const done = (gameState && gameState.completed_events) || [];
+                container.innerHTML = `
+                    <button class="btn ghost tiny" style="margin-bottom:12px;" onclick="openExportModal()">📤 导出故事（Markdown）</button>
+                    <div class="status-section">
+                        <div class="status-section-title">当前剧情阶段</div>
+                        <div class="status-card" style="border-left:3px solid var(--primary);">
+                            <div class="row"><span class="label" style="font-weight:600;">${escapeHtml(ca.title)}</span><span class="value">第 ${ca.act} 幕</span></div>
+                            <div class="text-block" style="font-size:12px;color:var(--text-muted)">${escapeHtml(ca.reason)}</div>
+                        </div>
+                    </div>
+                    ${acts.length ? `
+                    <div class="status-section">
+                        <div class="status-section-title">章节时间线</div>
+                        ${acts.map(a => `
+                            <div class="status-card">
+                                <div class="row"><span class="label">${escapeHtml(a.title)}</span><span class="value">第${a.act}幕</span></div>
+                                <div class="text-block" style="font-size:12px;color:var(--text-muted)">第${a.day}天 ${getPeriodLabel(a.period)} · ${escapeHtml(a.reason)}</div>
+                            </div>`).join("")}
+                    </div>` : ''}
+                    <div class="status-section">
+                        <div class="status-section-title">已完成大事记</div>
+                        ${done.length ? done.map(e => `<div class="status-card"><div class="text-block">${escapeHtml(e)}</div></div>`).join("") : '<div class="empty-hint">尚无已完成的重大事件</div>'}
+                    </div>
+                `;
+            }
+            break;
+
+        case "memory":
+            {
+                const all = getAllPinnedFacts();
+                const active = all.filter(p => p.status === "active");
+                const resolved = all.filter(p => p.status === "resolved");
+                container.innerHTML = `
+                    <div class="status-section">
+                        <div class="status-section-title">恒定事实（不可违背的记忆）</div>
+                        ${active.length ? active.map(p => `
+                            <div class="status-card">
+                                <div class="text-block">${escapeHtml(p.text)}</div>
+                                <div class="row" style="margin-top:6px;font-size:11px;color:var(--text-muted);">
+                                    <span>来源：${p.source === "ai" ? "AI 自动标注" : p.source === "state" ? "状态信号" : "手动"}</span>
+                                    <button class="btn ghost tiny" style="margin-left:auto;" onclick="unpinMemoryFact('${p.id}')">解除</button>
+                                </div>
+                            </div>
+                        `).join("") : '<div class="empty-hint">暂无恒定事实。重要誓言、诅咒、生死等会被自动钉住。</div>'}
+                    </div>
+                    <div class="status-section">
+                        <div class="status-section-title">手动添加恒定事实</div>
+                        <div class="status-card">
+                            <input type="text" id="manualPinInput" class="text-input" placeholder="例如：玩家与风部结盟，互为奥援" style="width:100%;box-sizing:border-box;" />
+                            <button class="btn ghost tiny" style="margin-top:8px;" onclick="addManualMemory()">＋ 钉住</button>
+                        </div>
+                    </div>
+                    ${resolved.length ? `
+                    <div class="status-section">
+                        <div class="status-section-title">已解除（历史）</div>
+                        ${resolved.map(p => `<div class="status-card"><div class="text-block" style="color:var(--text-muted);text-decoration:line-through;">${escapeHtml(p.text)}</div></div>`).join("")}
+                    </div>` : ''}
+                `;
+            }
+            break;
     }
+}
+
+function unpinMemoryFact(id) {
+    if (typeof unpinFact === "function") unpinFact(id);
+    if (typeof renderStatusPanel === "function") renderStatusPanel("memory");
+}
+
+// ★ ⑤ 货币展示名映射
+function currencyLabel(cur) {
+    const map = { gold: "金币", silver: "银币", coin: "铜钱", spirit_stone: "灵石", crystal: "魔晶" };
+    return map[cur] || cur;
+}
+
+/* ================= C) 商店 NPC + 阵营任务 · UI 处理函数 ================= */
+
+let _shopModalId = null;
+
+// 打开店铺弹窗：列出货架 + 玩家背包可出售项
+function openShopModal(shopId) {
+    if (!currentWorld || !gameState) return;
+    const shop = getShop(currentWorld, shopId);
+    if (!shop) { showToast("店铺不存在", "error"); return; }
+    _shopModalId = shopId;
+    const cur = shop.currency || "gold";
+    const curHave = (gameState.currency && typeof gameState.currency[cur] === "number") ? gameState.currency[cur] : 0;
+    const modal = document.getElementById("shopModal");
+    if (!modal) return;
+    const stockHtml = (shop.stock && shop.stock.length) ? shop.stock.map(function(it) {
+        const price = shopItemPrice(shop, it.item_id, gameState);
+        const afford = curHave >= price;
+        return '<div class="status-card"><div class="row"><span class="label">' + escapeHtml(it.name) + '</span><span class="value">×' + it.count + '</span></div>' +
+            '<div class="text-block" style="font-size:11px;color:var(--text-muted)">' + (it.desc || "") + '</div>' +
+            '<div class="row" style="margin-top:4px;"><span class="label" style="color:var(--gold,#caa24a)">' + price + ' ' + currencyLabel(cur) + '</span>' +
+            '<button class="btn ghost tiny" ' + (afford && it.count > 0 ? 'onclick="buyShopItem(\'' + it.item_id.replace(/'/g, "\\'") + '\')"' : 'disabled style="opacity:.5;cursor:not-allowed;"') + '>' + (it.count > 0 ? "购买" : "售罄") + '</button></div></div>';
+    }).join("") : '<div class="empty-hint">货架空空如也</div>';
+
+    const sellable = (gameState.inventory || []).filter(function(i) { return shop.stock.some(function(s) { return s.item_id === i.item_id; }); });
+    const sellHtml = sellable.length ? sellable.map(function(i) {
+        const it = shop.stock.find(function(s) { return s.item_id === i.item_id; });
+        const unit = Math.floor((it.price || 0) * 0.5);
+        return '<div class="status-card"><div class="row"><span class="label">' + escapeHtml(i.name) + '</span><span class="value">×' + i.count + '</span></div>' +
+            '<div class="row" style="margin-top:4px;"><span class="label" style="color:var(--gold,#caa24a)">回购 ' + unit + ' ' + currencyLabel(cur) + '</span>' +
+            '<button class="btn ghost tiny" onclick="sellShopItem(\'' + i.item_id.replace(/'/g, "\\'") + '\')">出售</button></div></div>';
+    }).join("") : '<div class="empty-hint">背包里没有该店收购的东西</div>';
+
+    modal.querySelector("#shopModalName").textContent = shop.name + (shop.owner ? "（" + shop.owner + "）" : "");
+    modal.querySelector("#shopModalCur").textContent = "持有：" + curHave + " " + currencyLabel(cur);
+    modal.querySelector("#shopModalStock").innerHTML = stockHtml;
+    modal.querySelector("#shopModalSell").innerHTML = sellHtml;
+    modal.classList.add("show");
+}
+
+function closeShopModal() {
+    const modal = document.getElementById("shopModal");
+    if (modal) modal.classList.remove("show");
+    _shopModalId = null;
+}
+
+function buyShopItem(itemId) {
+    if (!_shopModalId || !currentWorld || !gameState) return;
+    const r = buyFromShop(gameState, currentWorld, _shopModalId, itemId, 1);
+    showToast(r.msg, r.ok ? "success" : "error");
+    if (r.ok) { openShopModal(_shopModalId); if (typeof renderStatusPanel === "function") renderStatusPanel("items"); saveState(); }
+}
+
+function sellShopItem(itemId) {
+    if (!_shopModalId || !currentWorld || !gameState) return;
+    const r = sellToShop(gameState, currentWorld, _shopModalId, itemId, 1);
+    showToast(r.msg, r.ok ? "success" : "error");
+    if (r.ok) { openShopModal(_shopModalId); if (typeof renderStatusPanel === "function") renderStatusPanel("items"); saveState(); }
+}
+
+// 从任务板接受任务
+function acceptQuestFromBoard(questId) {
+    if (!currentWorld || !gameState) return;
+    const r = acceptQuest(gameState, currentWorld, questId);
+    showToast(r.msg, r.ok ? "success" : "error");
+    if (r.ok) { if (typeof renderStatusPanel === "function") renderStatusPanel("factions"); if (typeof saveWorlds === "function") saveWorlds(); saveState(); }
+}
+
+// 交付 / 完成进行中任务
+function turnInActiveQuest(questId) {
+    if (!currentWorld || !gameState) return;
+    const r = turnInQuest(gameState, currentWorld, questId);
+    showToast(r.msg, r.ok ? "success" : "error");
+    if (r.ok) { if (typeof renderStatusPanel === "function") renderStatusPanel("factions"); if (typeof saveWorlds === "function") saveWorlds(); saveState(); }
+}
+
+// ★ ⑤ 装备 / 卸下切换（全局供面板 onclick 调用）
+function toggleEquip(itemId) {
+    if (!gameState) return;
+    const item = (gameState.inventory || []).find(function(i) { return i.item_id === itemId; });
+    if (!item || !item.equippable || !item.slot) return;
+    const equippedId = gameState.equipped && gameState.equipped[item.slot];
+    if (equippedId === itemId) unequipItem(gameState, item.slot);
+    else equipItem(gameState, itemId);
+    saveState();
+    if (typeof renderStatusPanel === "function") renderStatusPanel(currentStatusTab);
+    if (typeof ActionMenu !== "undefined") ActionMenu.render(gameState);
+}
+
+// ★ ⑤ 合成：校验材料 → 消耗 inputs → 产出 output（全局供面板 onclick 调用）
+function doCraft(recipeId) {
+    if (!gameState) return;
+    const recipe = (gameState.crafting_recipes || []).find(function(r) { return r.id === recipeId; });
+    if (!recipe || !recipe.output) { showToast("配方无效", "warn"); return; }
+    const inv = gameState.inventory || [];
+    for (const req of (recipe.inputs || [])) {
+        const have = inv.find(function(i) { return i.item_id === req.item_id; });
+        if (!have || have.count < req.count) {
+            showToast("材料不足：" + (req.name || req.item_id) + " 需 " + req.count, "warn");
+            return;
+        }
+    }
+    applyStateChanges({ inventory: (recipe.inputs || []).map(function(req) { return { op: "remove", item_id: req.item_id, count: req.count }; }) });
+    applyStateChanges({ inventory: [{ op: "add", item_id: recipe.output.item_id, name: recipe.output.name, count: recipe.output.count || 1 }] });
+    saveState();
+    showToast("合成成功：" + (recipe.output.name || recipe.output.item_id), "success");
+    if (typeof renderStatusPanel === "function") renderStatusPanel(currentStatusTab);
+}
+
+function addManualMemory() {
+    const el = document.getElementById("manualPinInput");
+    if (!el) return;
+    const text = el.value.trim();
+    if (!text) return;
+    if (typeof addPinnedFacts === "function") addPinnedFacts([text], "manual");
+    el.value = "";
+    if (typeof renderStatusPanel === "function") renderStatusPanel("memory");
 }
 
 function updateGameDayInfo() {
@@ -2397,5 +3018,143 @@ function renderCombatPanel() {
         hint.textContent = "点击下方动作按钮「攻击」或「施法」进行战斗";
     }
     updateTopPanelPlaceholder();
+}
+
+/* ================= A5 调试面板（?debug=true 开启）================= */
+function initDebugPanel() {
+    // 在页面底部插入调试面板
+    var panel = document.createElement("div");
+    panel.id = "debugPanel";
+    panel.style.cssText = "position:fixed;bottom:0;right:0;width:360px;max-height:50vh;overflow-y:auto;z-index:9999;"
+        + "background:rgba(20,18,28,0.95);border-left:1px solid var(--card-border);padding:8px 12px;"
+        + "font-size:11px;font-family:monospace;color:#aaa;display:none;";
+    panel.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">'
+        + '<b style="color:#fff;">🛠️ 调试面板</b>'
+        + '<button onclick="var p=document.getElementById(\'debugPanel\');p.style.display=\'none\';" style="background:none;border:none;color:#888;cursor:pointer;font-size:14px;">✕</button>'
+        + '</div>'
+        + '<div id="debugStats" style="margin-bottom:4px;color:#5DCAA5;">缓存命中: -- | 本轮: --ms | 共 -- 轮</div>'
+        + '<div id="debugTurnList" style="max-height:40vh;overflow-y:auto;"></div>';
+    document.body.appendChild(panel);
+    panel.style.display = "block";
+
+    var toggleBtn = document.createElement("button");
+    toggleBtn.id = "debugToggleBtn";
+    toggleBtn.textContent = "🐛";
+    toggleBtn.title = "切换调试面板";
+    toggleBtn.style.cssText = "position:fixed;bottom:4px;right:8px;z-index:10000;background:rgba(0,0,0,0.6);"
+        + "border:1px solid #555;color:#888;font-size:14px;padding:2px 6px;cursor:pointer;border-radius:4px;";
+    toggleBtn.onclick = function() {
+        var p = document.getElementById("debugPanel");
+        p.style.display = p.style.display === "none" ? "block" : "none";
+    };
+    document.body.appendChild(toggleBtn);
+
+    // 注册渲染钩子：logTurnStats 之后自动刷新
+    var origLogTurn = window.logTurnStats;
+    window.logTurnStats = function(hit, miss, total, usage) {
+        if (origLogTurn) origLogTurn(hit, miss, total, usage);
+        renderDebugPanel();
+    };
+}
+
+function renderDebugPanel() {
+    if (!window._debugMode) return;
+    if (typeof debugLog === "undefined" || !debugLog || !debugLog.turns) return;
+
+    var turns = debugLog.turns;
+    var stats = document.getElementById("debugStats");
+    var list = document.getElementById("debugTurnList");
+    if (!stats || !list) return;
+
+    var totalTurns = turns.length;
+    var totalCacheHit = 0, totalCacheMiss = 0, totalOutput = 0;
+    turns.forEach(function(t) {
+        totalCacheHit += t.cacheHitTokens || 0;
+        totalCacheMiss += t.cacheMissTokens || 0;
+        totalOutput += t.outputTokens || 0;
+    });
+    var overallHitRate = (totalCacheHit + totalCacheMiss) > 0
+        ? (totalCacheHit / (totalCacheHit + totalCacheMiss) * 100).toFixed(1) + "%" : "--";
+
+    stats.innerHTML = '<span>累计命中率: <b style="color:' + (parseFloat(overallHitRate) >= 50 ? '#5DCAA5' : '#EF9F27') + '">' + overallHitRate + '</b></span>'
+        + ' | <span>输出: <b>' + (totalOutput / 1000).toFixed(1) + 'K tokens</b></span>'
+        + ' | <span>共 <b>' + totalTurns + '</b> 轮</span>';
+
+    var recent = turns.slice(-20).reverse();
+    var html = '<table style="width:100%;border-collapse:collapse;">'
+        + '<tr style="color:#888;border-bottom:1px solid #333;"><th style="text-align:left;">#</th><th>耗时</th><th>命中率</th><th>输入</th><th>输出</th><th>状态</th></tr>';
+    recent.forEach(function(t) {
+        var statusColor = t.status === "ok" ? "#5DCAA5" : t.status === "error" ? "#E24B4A" : "#888";
+        html += '<tr style="border-bottom:1px solid #222;">'
+            + '<td>' + t.turn + '</td>'
+            + '<td style="color:#aaa;">' + (t.latencyMs || "--") + '</td>'
+            + '<td style="color:' + (parseFloat(t.hitRate) >= 50 ? '#5DCAA5' : '#EF9F27') + ';">' + (t.hitRate || "0") + '</td>'
+            + '<td style="color:#aaa;">' + (t.inputTokens || 0) + '</td>'
+            + '<td style="color:#aaa;">' + (t.outputTokens || 0) + '</td>'
+            + '<td style="color:' + statusColor + ';">' + (t.status || "--") + '</td>'
+            + '</tr>';
+    });
+    html += '</table>';
+    list.innerHTML = html;
+}
+
+/* ================= 移动端键盘适配 ================= */
+function setupMobileKeyboardHandler() {
+    if (!window.visualViewport) return; // 桌面浏览器无需处理
+
+    var _lastHeight = window.visualViewport.height;
+    var _keyboardOpen = false;
+    var _debounceTimer = null;
+
+    function onViewportChange() {
+        clearTimeout(_debounceTimer);
+        _debounceTimer = setTimeout(function() {
+            var currentHeight = window.visualViewport.height;
+            var heightDiff = Math.abs(currentHeight - _lastHeight);
+
+            // 高度变化超过 150px 才认为是键盘开/关（过滤滚动条抖动）
+            if (heightDiff < 80) return;
+
+            _keyboardOpen = currentHeight < _lastHeight;
+
+            // 键盘打开 → 把 body 高度限定为 visualViewport，输入区自然落在底部
+            document.body.style.height = currentHeight + "px";
+
+            // 键盘打开时，把 chat log 滚到底部确保输入框可见
+            if (_keyboardOpen) {
+                var gameLog = document.getElementById("gameLog");
+                if (gameLog) {
+                    // 等一帧让布局完成，再滚到底部
+                    requestAnimationFrame(function() {
+                        gameLog.scrollTop = gameLog.scrollHeight;
+                    });
+                }
+            }
+
+            _lastHeight = currentHeight;
+        }, 120); // 120ms 防抖，避免连续 resize 抖动
+    }
+
+    window.visualViewport.addEventListener("resize", onViewportChange);
+
+    // 额外：输入框获得焦点时主动滚底（部分安卓机型 visualViewport 事件不稳定）
+    var inputEl = document.getElementById("playerInput");
+    if (inputEl) {
+        inputEl.addEventListener("focus", function() {
+            requestAnimationFrame(function() {
+                var gameLog = document.getElementById("gameLog");
+                if (gameLog) gameLog.scrollTop = gameLog.scrollHeight;
+                document.body.style.height = window.visualViewport ? window.visualViewport.height + "px" : "";
+            });
+        });
+        inputEl.addEventListener("blur", function() {
+            // 键盘关闭后恢复自然高度
+            setTimeout(function() {
+                if (!document.activeElement || document.activeElement.tagName !== "INPUT") {
+                    document.body.style.height = "";
+                }
+            }, 300);
+        });
+    }
 }
 

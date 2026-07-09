@@ -81,10 +81,31 @@ window.MapDataV1 = (function() {
       grid: data.grid || [],
       tileLegend: data.tile_legend || {},
       entities: (data.entities || []).map(function(e) {
-        return { row: e.row, col: e.col, id: e.id || '', name: e.name || '', desc: e.desc || '' };
+        return { row: e.row, col: e.col, id: e.id || '', name: e.name || '', desc: e.desc || '', type: e.type || '' };
       }),
-      description: data.description || ''
+      description: data.description || '',
+      // ★ 战争迷雾：已探索网格（二维布尔，持久化在 map 对象上）
+      explored: data.explored || null,
+      // ★ 战争迷雾开关：true=开启，false=关闭（缺省按世界设置，applyStateChanges 会补）
+      fogOfWar: (typeof data.fog_of_war === 'boolean') ? data.fog_of_war : true,
+      // ★ 命名地点节点：[{name,row,col}]，供叙事 current_location 反向回写时定位玩家坐标
+      poi: (data.poi || []).map(function(p) {
+        return { name: p.name || '', row: p.row, col: p.col };
+      })
     };
+  }
+
+  /**
+   * 创建一张全 false 的 explored 网格（height × width）
+   */
+  function createExploredGrid(width, height) {
+    var g = [];
+    for (var y = 0; y < height; y++) {
+      var row = [];
+      for (var x = 0; x < width; x++) row.push(false);
+      g.push(row);
+    }
+    return g;
   }
 
   /**
@@ -154,6 +175,7 @@ window.MapDataV1 = (function() {
   return {
     validate: validate,
     parse: parse,
+    createExploredGrid: createExploredGrid,
     getTileAt: getTileAt,
     isWalkable: isWalkable,
     getEntityAt: getEntityAt,

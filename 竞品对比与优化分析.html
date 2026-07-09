@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>超级八爪藤壶 · 竞品对比与优化方向分析</title>
+<style>
+  :root{
+    --bg:#f7f8fa; --card:#ffffff; --ink:#1f2430; --sub:#5b6472; --line:#e6e9ef;
+    --blue:#2f6df0; --green:#1f9d6b; --amber:#d98a00; --red:#d6453d; --purple:#7a5bd8;
+    --chip:#eef2fb;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,"PingFang SC","Microsoft YaHei",system-ui,sans-serif;line-height:1.7;font-size:15px}
+  .wrap{max-width:1080px;margin:0 auto;padding:32px 22px 80px}
+  header.hero{background:linear-gradient(135deg,#2f6df0,#7a5bd8);color:#fff;border-radius:16px;padding:30px 32px;margin-bottom:26px}
+  header.hero h1{margin:0 0 6px;font-size:26px;letter-spacing:.5px}
+  header.hero p{margin:0;opacity:.92;font-size:14px}
+  .tldr{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--blue);border-radius:12px;padding:18px 22px;margin:22px 0}
+  .tldr b{color:var(--blue)}
+  h2{font-size:21px;margin:38px 0 14px;padding-bottom:8px;border-bottom:2px solid var(--line)}
+  h3{font-size:16px;margin:22px 0 8px;color:var(--ink)}
+  .sec{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:20px 24px;margin:16px 0}
+  table{border-collapse:collapse;width:100%;font-size:13.5px;margin:10px 0}
+  th,td{border:1px solid var(--line);padding:9px 11px;vertical-align:top;text-align:left}
+  th{background:#f0f3f9;font-weight:600}
+  td.lead{background:#eef6f0;font-weight:600}
+  td.gap{background:#fdf0ef}
+  .card{border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin:14px 0;background:var(--card)}
+  .card .tag{display:inline-block;font-size:12px;font-weight:700;padding:2px 9px;border-radius:20px;margin-right:6px;color:#fff}
+  .p0{background:var(--red)} .p1{background:var(--amber)} .p2{background:var(--blue)} .ok{background:var(--green)}
+  .card h4{margin:2px 0 8px;font-size:15.5px}
+  .card .row{display:flex;gap:10px;margin:7px 0;font-size:14px}
+  .card .k{flex:0 0 78px;color:var(--sub);font-weight:600}
+  .code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:#f3f5f9;padding:1px 6px;border-radius:5px;font-size:12.5px;color:#334}
+  .muted{color:var(--sub);font-size:13px}
+  .pill{display:inline-block;background:var(--chip);color:var(--blue);font-size:12px;padding:2px 10px;border-radius:20px;margin:2px 4px 2px 0}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:780px){.grid{grid-template-columns:1fr}}
+  ul{margin:8px 0 8px 4px;padding-left:20px}
+  li{margin:5px 0}
+  .foot{margin-top:40px;color:var(--sub);font-size:12.5px;text-align:center}
+  .note{border:1px dashed var(--amber);background:#fffaf0;border-radius:10px;padding:12px 16px;margin:14px 0;font-size:13.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>超级八爪藤壶 · 竞品对比与优化方向</h1>
+  <p>对比 AI Dungeon / NovelAI / AI Roguelite / 单人跑团（Mythic + Ironsworn），从逻辑、游戏性、故事性、玩法四维度找优化点</p>
+</header>
+
+<div class="tldr">
+  <b>一句话定位：</b>本项目在「记忆一致性 / 状态结构化 / 防跑题 / 单人跑团判定」上已<strong>领先 AI Dungeon</strong>，并在本轮补齐了<strong>预言机混沌因子</strong>与<strong>常量记忆层（pinned_facts）</strong>，真正从"AI 写故事"跨入"AI 单人跑团"。但在
+  <strong>"世界模拟深度"仍部分落后 AI Roguelite</strong>（多阵营声望/货币流通/合成工坊/装备已落地，完整商店 NPC 固定货架/定价 与 阵营任务 接取/交付闭环 亦已落地，但"阵营驱动遭遇"尚未做）、
+  <strong>"记忆策展可控性"仍落后 NovelAI</strong>（玩家可编辑世界书未做）、
+  <strong>"内容生态"仍略弱于 NovelAI 的可策展世界书</strong>（预设 IP 库已落地 8 个开箱即玩世界，"一键导入 IP 设定"向导也已落地，玩家可编辑世界书面板同样已落地（手动策展 lore/常量记忆））。
+  下一步主线：<b>把"会讲连贯故事 + 有判定 + 有未知"的引擎，补成"有空间、有经济、有 IP 生态"的真游戏</b>。
+  <br><span class="muted" style="display:block;margin-top:8px">进度：① 技能检定 ✅　④ 预言机 ✅　⑧ 常量记忆 ✅　⑦ 地图战斗集成 ✅　⑨ 章节幕 ✅　⑭ 反向回写+战争迷雾 ✅　⑤ 世界模拟(势力声望/经济/合成/装备) ✅　⑪ 预设 IP 库(8世界/canon) ✅　② NPC地图化 ✅　一键导入IP设定 ✅　玩家世界书(手动策展) ✅　⑫ 成本/性能优化 ✅　⑨扩展 分支快照(多时间线) ✅　⑬ 导出故事(Markdown,43 PASS) ✅　⑥ 跨周目meta成长(传说评级+开局馈赠,31 PASS) ✅　⑩ 基调显式持久化(AI显式定调+剧情切基调,14 PASS) ✅　I URL拼接健壮性(去重/协议补全/代理规范化,25 PASS) ✅　|　跳过：③ C1 彩蛋</span>
+</div>
+
+<h2>0. 已核实的项目底座（先说强项，避免无的放矢）</h2>
+<div class="sec">
+<p class="muted">以下均通过读代码 + grep 核实，非空谈文档宣称：</p>
+<ul>
+  <li><b>混合 RAG 真的生效了</b>：关键词 + 浏览器端 ONNX 向量双路（<span class="code">app-ai.js:188 retrieve()</span>），且 AI 生成世界会在生成后补算 embedding（<span class="code">app-ui.js:1078 computeEmbeddingsForWorld</span>），不是文档吹牛。融合排序有类别配额、行为记录有 hits≥2 阈值。</li>
+  <li><b>状态引擎权威管理</b>：时间统一入口（<span class="code">applyTimeChange</span>）、状态效果由引擎递减 duration（B2）、NPC 结构化位置账本（<span class="code">npc_states</span>）、目标 deadline 引擎强制失败（B1）——这批逻辑 bug 已被修掉。</li>
+  <li><b>世界"活"的设计到位</b>：世界脉搏（E1）、NPC 好感量化（E2）、张力（E7）、声望（E4）、环境锚点（E10）、跨周目传说（E12）——叙事层反馈闭环完整。</li>
+  <li><b>双模式架构清晰</b>：纯叙事（无骰子）vs 跑团（TRPG）按 <span class="code">ruleset_type</span> 切换 system prompt 规则段，叙事模式数值零泄漏。</li>
+  <li><b>防注入有双重防线</b>：前端 <span class="code">detectPromptInjection</span> + system prompt 角色锁定。⚠️ 但见下文 C1 一致性风险。</li>
+  <li><b>韧性好</b>：AI 不返回选项时 <span class="code">buildSmartFallbackChoices()</span> 按场景/张力/目标动态兜底，不会卡死。</li>
+  <li><b>地图与战争迷雾已就位</b>：瓦片地图（MapDataV1）已与战斗集成（敌人显式上图、BFS 多步寻路），并支持反向回写（叙事位置→地图玩家标记）与三态战争迷雾（未探索/已探索暗淡/可见）。</li>
+</ul>
+</div>
+
+<h2>1. 横向对比矩阵</h2>
+<div class="sec">
+<table>
+  <tr><th style="width:14%">维度</th><th style="width:18%">本项目（超级八爪藤壶）</th><th style="width:17%">AI Dungeon</th><th style="width:17%">NovelAI</th><th style="width:17%">AI Roguelite</th><th style="width:17%">单人跑团（Mythic/Ironsworn）</th></tr>
+  <tr><td>记忆 / 一致性</td><td class="lead">RAG+关键事实+锚点缓存+常量记忆层 pinned_facts，长程不漂移</td><td>长期被"遗忘/漂移"困扰（2026 仍是其头号吐槽）</td><td>分层记忆（常驻 Memory + 触发 Lorebook + Author's Note）</td><td>靠结构化 DB，不依赖 LLM 记忆</td><td>由玩家记笔记，不依赖 AI 记忆</td></tr>
+  <tr><td>世界观 / RAG</td><td class="lead">AI 生成知识库 + 双路检索</td><td>场景/世界观弱，易跑题</td><td class="lead">用户可策展"世界书"，关键词触发</td><td>程序化生成地点/事件</td><td>玩家手工设定</td></tr>
+  <tr><td>规则 / 骰子</td><td>战斗 D20 掷骰 ✅；<b>非战斗技能检定已接入 ✅</b>（说服/巧手/体操）</td><td>无骰子，纯自由文本</td><td>无骰子（纯写作）</td><td class="lead">完整技能/属性/检定系统</td><td class="lead">完整规则 + oracle 决定成败</td></tr>
+  <tr><td>世界模拟</td><td>有瓦片地图+战斗集成+战争迷雾+多阵营声望+货币流通+合成工坊+装备（部分成体系）</td><td>无</td><td>无</td><td class="lead">强：空间地图、NPC 日程、商店、合成、阵营</td><td>中：地点/线索靠玩家追踪</td></tr>
+  <tr><td>随机性 / 预言机</td><td class="gap">已加 oracle 开关+混沌因子(1-9) ✅；仍弱于 Mythic 的事件矩阵</td><td>无</td><td>无</td><td>系统随机事件</td><td class="lead">有：yes/and、no/but、混沌因子、事件检定</td></tr>
+  <tr><td>角色 / NPC</td><td class="lead">结构化 NPC 卡+好感量化+声音一致</td><td>扁平</td><td class="lead">深度角色卡+语气设定</td><td>有日程与经济关系</td><td>玩家扮演，NPC 由 GM 口述</td></tr>
+  <tr><td>经济 / 物品</td><td>货币按币种流通、物品可装备改伤害/防御、配方合成工坊已落地；<b>商店 NPC 固定货架/定价 + 阵营任务（接取/交付/奖励）已落地</b> ✅</td><td>无</td><td>无</td><td class="lead">完整经济、装备、制作</td><td>规则内管理</td></tr>
+  <tr><td>跨周目</td><td class="lead">传说评级 + 开局机制性馈赠（E12 meta 成长）</td><td>无</td><td>无</td><td class="lead">meta 成长</td><td>玩家自定战役</td></tr>
+  <tr><td>内容生态</td><td class="gap">预设仅 2 个（红楼/星辉）</td><td class="lead">海量社区场景/剧本</td><td class="lead">社区模型/模块/故事</td><td class="lead">Steam 发行、持续更新</td><td class="lead">成熟规则书社区</td></tr>
+  <tr><td>安全</td><td>双防线，但 C1 越狱彩蛋自相矛盾</td><td>内容审核严</td><td>较开放</td><td>依赖平台</td><td>本地无需</td></tr>
+</table>
+<p class="muted">绿色=该项目领先；红色=本项目明显短板。</p>
+</div>
+
+<h2>2. 逻辑与系统维度</h2>
+
+<div class="card">
+  <span class="tag p0">P0</span><span class="tag ok">已落地</span>
+  <h4>①"跑团"名不副实：非战斗技能检定从未接入骰子</h4>
+  <div class="row"><span class="k">现状</span><span><span class="code">action-menu.js</span> 里 <span class="code">resolveSkillCheck()</span> 写好了，但 UI 只接了 <b>attack / cast</b>（战斗）；<b>交谈/移动/物品</b> 三个按钮只生成一句通用文本（如"尝试与在场的人交谈"）直接丢给 AI 自由发挥。<span class="code">rulesets.json</span> 里定义的 persuade / survey / survive / investigate / sneak 等社交/探索动作全无掷骰支持。</span></div>
+  <div class="row"><span class="k">同行</span><span>任何真·TRPG 的核心不是战斗骰，而是<strong>社交/探索技能检定</strong>——说服、潜行、调查、察觉。Mythic/Ironsworn 的"move"本质就是带随机性的行动判定。</span></div>
+  <div class="row"><span class="k">建议</span><span>把规则集里的动作映射成技能检定按钮（说服→CHA 检定、调查→INT、潜行→DEX…），DC 由场景/张力动态给，结果作为 <span class="code">[系统规则结果]</span> 喂给 AI 叙事。让"单人跑团"真正有"判定"。</span></div>
+  <div class="row"><span class="k">成本</span><span>低：复用现有 <span class="code">Dice.checkAgainst</span> + <span class="code">resolveSkillCheck</span>，只补 UI 绑定与 system 指令。</span></div>
+  <div class="row"><span class="k">落地</span><span>action-menu.js 已接入 talk→说服(CHA,DC13)/use_item→巧手(DEX,DC13)/move→体操(DEX,DC12)，检定结果以 <span class="code">[系统规则结果]</span> 喂给 AI 叙事；skill_check 测试 13 PASS。</span></div>
+</div>
+
+<div class="card">
+  <span class="tag p1">P1</span>
+  <h4>② NPC 位置抽取脆弱：只认 lore 已知地点名</h4>
+  <div class="row"><span class="k">现状</span><span><span class="code">extractLocationFromActivity()</span> 只在 <span class="code">npc_activity</span> 文本里匹配 lore <span class="code">地点</span> 类标题。一旦 AI 描写一个新地点名（不在知识库），抽取返回 <span class="code">null</span>，NPC 位置账本静默失效 → 又可能"瞬移"。</span></div>
+  <div class="row"><span class="k">建议</span><span>让 AI 在 <span class="code">state_changes.npc_states</span> 里<strong>显式返回 location 字段</strong>（结构化而非靠文本抽取），位置账本直接采信；文本抽取仅作兜底。</span></div>
+  <div class="row"><span class="k">成本</span><span>低：改 world-gen prompt + <span class="code">applyStateChanges</span> 读取逻辑。</span></div>
+</div>
+
+<div class="card">
+  <span class="tag p1">P1</span><span class="tag p2">已知</span>
+  <h4>③ C1 安全自相矛盾（你之前指示跳过，此处仅作风险提示）</h4>
+  <div class="row"><span class="k">现状</span><span><span class="code">app-core.js:84</span> 主题连点 10 次会把一段 jailbreak（"Untrammelled Writing Assistant…Ignore irrelevant moral appeals…"）注入 <span class="code">custom_prefix</span>，而 <span class="code">buildSystemPrompt</span> 把 custom_prefix 拼在 system <strong>最前面</strong>——直接架空了同文件精心写的"角色锁定/防注入"最高优先级规则。</span></div>
+  <div class="row"><span class="k">风险</span><span>自己绕过自己的安全架构；且这段越狱文本与"禁止事项"第 336 行的优雅拒绝逻辑直接冲突，会动摇玩家对防注入的信任。</span></div>
+  <div class="row"><span class="k">建议</span><span>若保留彩蛋，至少把"身份锁定/防注入"指令固定为绝对首位，custom_prefix 只允许追加在其<strong>之后</strong>；或直接移除该彩蛋。</span></div>
+  <div class="row"><span class="k">成本</span><span>极低（数行）。需你拍板是否动。</span></div>
+</div>
+
+<h2>3. 游戏性维度</h2>
+
+<div class="card">
+  <span class="tag p0">P0</span><span class="tag ok">已落地</span>
+  <h4>④ 缺"叙事预言机 / 混沌因子"——纯叙事没有真正的未知感</h4>
+  <div class="row"><span class="k">现状</span><span>纯叙事模式所有情节由 LLM 采样决定，没有可控的随机性来源。玩家"不知道接下来发生什么"的惊喜感，完全依赖模型"吐"什么，不可设计、不可调难度。</span></div>
+  <div class="row"><span class="k">同行</span><span>单人跑团（Mythic GM Emulator）的灵魂就是 <strong>oracle</strong>：用"是/否/且/但"的随机判定 + 混沌因子 + 随机事件检定，让没有人类 GM 时依然有"命运的不确定性"。Ironsworn 的 move 也是掷骰决定成败与代价。</span></div>
+  <div class="row"><span class="k">建议</span><span>为纯叙事模式引入轻量 oracle：① 每 N 轮或小概率触发"随机事件/转折"（复用世界脉搏的 LLM 调用，但带" complication/ twist"意图）；② 提供一个"掷命运骰"按钮，玩家可对"某事是否发生"求 oracle，AI 据结果叙事；③ 维护一个"混沌值"，越高越易出意外。这让"单人跑团"的随机心跳成立。</span></div>
+  <div class="row"><span class="k">成本</span><span>中：需新增 oracle 状态 + UI 按钮 + prompt 段。</span></div>
+  <div class="row"><span class="k">落地</span><span>创建时可开关 oracle + 混沌因子滑杆(1-9)；每轮按 cf/9 概率注入随机事件；关闭则纯爽文；oracle_check 测试 8 PASS。</span></div>
+</div>
+
+<div class="card">
+  <span class="tag p1">P1</span><span class="tag ok">已落地</span>
+  <h4>⑤ 世界是"文本"不是"模拟"：缺空间图 / 势力声望 / 经济 / 合成</h4>
+  <div class="row"><span class="k">现状</span><span>地点只是 lore 里的名词；货币（铜钱）在背包里但无任何消耗处；无阵营/势力声望系统（只有全局 tension）；无装备/合成。NPC 有位置账本但无"世界一张网"。</span></div>
+  <div class="row"><span class="k">同行</span><span><strong>AI Roguelite</strong>（Steam 在售，标榜"首个用 LLM 驱动真实游戏机制的 RPG"）把地点、NPC 日程、商店、物品、阵营全部做成可交互的模拟。玩家是在"玩游戏"，不只是"读故事"。</span></div>
+  <div class="row"><span class="k">建议</span><span>分阶段补"游戏骨架"：
+    <ul>
+      <li><b>空间图</b>：把 lore 地点连成有"旅行耗时/可达性"的图，移动消耗时间（与现有 periods 系统天然契合）；</li>
+      <li><b>势力声望</b>：把 tension 升级为多个阵营的 standing（友好/敌对影响可接任务与遭遇）；</li>
+      <li><b>经济</b>：让货币在商店/赏金/贿赂中真实流动；</li>
+      <li><b>合成/装备</b>：物品可组合、可穿戴改属性（跑团模式）。</li>
+    </ul></span></div>
+  <div class="row"><span class="k">成本</span><span>高（这是"从引擎到游戏"的跃迁），但可先做空间图+势力声望两块，杠杆最大。</span></div>
+  <div class="row"><span class="k">进度</span><span>空间图地基（瓦片地图+玩家位置+战争迷雾）已落地，见 ⑭；本轮已补齐<strong>多阵营声望 factions / 货币经济 currency / 合成工坊 crafting / 装备系统</strong>——AI 在 state_changes 输出 factions/currency/crafting，玩家在「收集」面板装备/合成，武器伤害接入攻击检定。完整商店 NPC（固定货架/定价）与"阵营驱动任务/遭遇"留作增强。详见 docs/12 §10.5。</span></div>
+</div>
+
+<div class="card">
+  <span class="tag p2">P2</span><span class="tag ok">已落地</span>
+  <h4>⑥ 跨周目 meta 成长（传说评级 + 开局机制性馈赠）✅</h4>
+  <div class="row"><span class="k">现状</span><span>E12 传说摘要在新世界曾是"NPC 可能提起前世名字"的文本彩蛋；<b>现已升级为 meta 成长</b>：传说按声望/张力/达成目标/最深 NPC 羁绊/存活天数评为 传奇/史诗/显赫/平凡 四档，带入新世界时给予开局正反馈（初始声望/资源/特殊 NPC 关系/传奇档额外遗物），让重开有成长感（见 §10.9，legend_inherit_check 31 PASS）。</span></div>
+  <div class="row"><span class="k">同行</span><span>AI Roguelite /  Roguelike 的核心是<strong>meta-progression</strong>：上局积累转化为下局初始优势。</span></div>
+  <div class="row"><span class="k">建议</span><span>传说等级（如"传奇"级传说）带入新世界时给初始声望/资源/特殊 NPC 关系加成，让重开有正反馈。</span></div>
+  <div class="row"><span class="k">成本</span><span>低-中。</span></div>
+</div>
+
+<div class="card">
+  <span class="tag p2">P2</span><span class="tag ok">已落地</span>
+  <h4>⑦ 战斗与瓦片地图"两张皮"</h4>
+  <div class="row"><span class="k">现状</span><span>瓦片地图（MapDataV1）是 AI 按场景生成的描述性网格；战斗是抽象 D20（无位置/距离/AOE）。两者不互通——地图上看不见"你与怪相距 3 格"。</span></div>
+  <div class="row"><span class="k">建议</span><span>让战斗在地图网格上发生：距离影响命中/射程、地形给掩体加成、AOE 影响相邻格。复用已有 tile-map 渲染，改动集中在 <span class="code">combat-engine</span>。</span></div>
+  <div class="row"><span class="k">成本</span><span>中。</span></div>
+  <div class="row"><span class="k">落地</span><span>战斗开始把敌人显式上图（<span class="code">addMapEnemiesForCombat</span>），渲染前同步（<span class="code">syncMapCombatEntities</span>），点击敌人即攻击；BFS 多步寻路（≤8 步）；map_combat_check 测试 22 PASS。</span></div>
+</div>
+
+<div class="card">
+  <span class="tag p2">P2</span><span class="tag ok">已落地</span>
+  <h4>⑭ 地图：反向回写 + 战争迷雾</h4>
+  <div class="row"><span class="k">现状</span><span>地图玩家位置此前只能由"点击地图移动"正向写入，AI 叙事移动玩家时地图不跟随；且整图全亮无探索感。</span></div>
+  <div class="row"><span class="k">落地</span><span>① 反向回写 <span class="code">syncMapPlayerFromNarrative</span>：AI 给出 <span class="code">player_pos</span> 显式坐标 / 命中地图 poi 节点 / 命中瓦片图例名 三种方式把叙事位置同步到地图玩家标记（战斗中 / 地点未变不回写）；② 战争迷雾 <span class="code">fog_of_war</span> 开关 + <span class="code">explored</span> 网格持久化，三态渲染（未探索 / 已探索暗淡 / 可见），战斗时额外揭示存活敌人周围。创建表单可勾选迷雾。reverse_writeback_fog_check 测试 35 PASS。</span></div>
+  <div class="row"><span class="k">成本</span><span>中（已交付）。</span></div>
+</div>
+
+<h2>4. 故事性维度</h2>
+
+<div class="card">
+  <span class="tag p0">P0</span><span class="tag ok">已落地</span>
+  <h4>⑧ 记忆层缺"常驻/常量"——核心誓言、诅咒可能被遗忘</h4>
+  <div class="row"><span class="k">现状</span><span>"永久记忆"只无条件注入<strong>最近 5 条</strong> <span class="code">behavior_records</span>（recency-based）；更早的"我向女神起誓""这枚戒指被诅咒"若不在最近 5 条、且玩家本轮输入没命中 ≥2 词，就不会被召回。长线叙事里"核心设定"可能漂移。</span></div>
+  <div class="row"><span class="k">同行</span><span><strong>NovelAI 把记忆分成两层</strong>：<b>Memory</b>（常驻，永远进上下文，放世界观铁律/主角核心特质）+ <b>Lorebook</b>（关键词触发，按需召回细节）。玩家可自由策展。</span></div>
+  <div class="row"><span class="k">建议</span><span>① 新增 <span class="code">pinned_facts</span>（常量记忆）：玩家可手动钉记，或世界生成时把"核心铁律/主角锚点/世界规则"自动钉入，永远注入；② 检索加入<strong>重要性加权</strong>（被多次引用/被标记重要的事实提升权重）；③ 像 NovelAI 一样开放<strong>玩家编辑世界书</strong>（增删 lore 条目），把 AI 自动记忆与玩家策展结合。</span></div>
+  <div class="row"><span class="k">成本</span><span>中：加 pinned 层 + 一个"记忆/世界书"编辑面板。</span></div>
+  <div class="row"><span class="k">落地</span><span>新增 <span class="code">pinned_facts</span> 常量记忆层；引擎自动钉住死亡/诅咒/誓言/阵营等关键状态信号，永远注入上下文；"记忆"标签页可见；live 测试端到端验证。</span></div>
+</div>
+
+<div class="card">
+  <span class="tag p1">P1</span><span class="tag ok">已落地</span>
+  <h4>⑨ 单线程、无章节/幕结构与多解路径</h4>
+  <div class="row"><span class="k">现状</span><span>剧情是单一连续流，没有"第几幕/第几章"的结构标记，没有关键抉择的"分叉快照"，没有"what-if"回放。</span></div>
+  <div class="row"><span class="k">同行</span><span>AI Dungeon 有场景/分支概念；成熟叙事设计强调"act 结构"与"多结局"。</span></div>
+  <div class="row"><span class="k">建议</span><span>用现有 <span class="code">goals</span>/<span class="code">completed_events</span> 自动标注"幕"边界（如完成某主线目标=进入第二幕）；在状态面板展示剧情时间线；关键抉择允许"回溯到上一存档点"试不同路径（配合现有 localStorage 存档天然可行）。</span></div>
+  <div class="row"><span class="k">成本</span><span>低-中。</span></div>
+  <div class="row"><span class="k">落地</span><span>基于已完成主线目标 + 事件数自动推导"幕"（<span class="code">computeCurrentAct</span>），状态面板"剧情"标签页展示当前幕徽章 + 章节时间线 + 大事记；act_check 测试 12 PASS。分支快照（what-if 回溯）已落地：关键抉择前拍快照、随时分叉回任意时间点（见 §10.7，snapshot_check 38 PASS）。导出故事已落地：剧情标签页「📤 导出故事」一键把当前周目渲染成 Markdown 全文（背景/章节时间线/正文/大事记/世界脉搏/角色档案/世界书/任务），可下载 .md 或复制全文（见 §10.8，story_export_check 43 PASS）。</span></div>
+</div>
+
+<div class="card">
+  <span class="tag p2">P2</span>
+  <span class="tag ok">已落地</span>
+  <h4>⑩ 基调显式持久化（AI 显式定调 + 剧情可切基调）✅</h4>
+  <div class="row"><span class="k">现状</span><span>旧版 <span class="code">buildToneGuide()</span> 用正则在 name/desc/hero 里猜"日常/高张力/悬疑/浪漫"，同一世界全程不变。</span></div>
+  <div class="row"><span class="k">落地</span><span>世界生成时由 AI <strong>显式定调</strong>并持久化到 <span class="code">currentWorld.tone</span>（primary/labels/description）；<span class="code">buildSystemPrompt</span> 改用 <span class="code">resolveToneGuide(currentWorld)</span> 恒定采用持久化基调。剧情中 AI 可在 <span class="code">state_changes.tone</span> 显式切换基调，<span class="code">applyStateChanges</span> 更新并 <span class="code">saveWorlds()</span> 持久化 + <span class="code">invalidateSystemPromptCache()</span> 刷新下一轮 system prompt，且主基调变化会留下可见记录。详见 docs/12 §10.10（14 PASS）。</span></div>
+  <div class="row"><span class="k">成本</span><span>低。</span></div>
+</div>
+
+<h2>5. 玩法 / 接入维度</h2>
+
+<div class="card">
+  <span class="tag p1">P1</span>
+  <span class="tag ok">已落地</span>
+  <h4>⑪ 预设 IP 库（8 个开箱即玩世界 + canon 校验）</h4>
+  <div class="row"><span class="k">现状</span><span>已内置 8 个：5 个公有领域经典 IP（三国/西游记/水浒传/山海经/克苏鲁，均为作者逝世逾百年的公有领域作品，无版权风险；克苏鲁仅用洛夫克拉夫特原著公版神话元素，避开 TRPG 规则书机制）+ 3 个原创（星轨遗痕·科幻废土 / 雾港来信·纯叙事 / 深窖纪元·D&D 机制奇幻，怪物仅用公版奇幻 archetype 避开威世智专有设定），每个带 canon 硬约束与权威 lore、阵营/经济/装备初始状态。旧 2 个 demo（红楼梦/星辉魔法学院）已移除，门槛降至"点开即玩"。</span></div>
+  <div class="row"><span class="k">同行</span><span>AI Dungeon / NovelAI 靠<strong>海量社区预设</strong>降低首玩成本；粉丝向 IP 体验的关键是"开箱即像"。</span></div>
+  <div class="row"><span class="k">建议</span><span>本轮已完成"预设 IP 库 + canon 校验清单"两项（见 docs/12 §10.6），并已完成<strong>一键导入 IP 设定</strong>向导（粘贴原著段落→AI 抽取知识库与人物，支持长文分块/版权开关/精修覆盖模式），把"套用任意 IP"门槛清零；并新增<strong>玩家世界书</strong>策展面板（手动增删改 lore/常量记忆，对标 NovelAI）与<strong>NPC 地图化</strong>（NPC 随叙事在地图显示/移动），详见 docs/12 §1.3。</span></div>
+  <div class="row"><span class="k">成本</span><span>中（预设库是内容工程，可分批）。</span></div>
+</div>
+
+<div class="card">
+  <span class="tag p2">P2</span>
+  <h4>⑫ 成本 / 性能两处可优化</h4>
+  <div class="row"><span class="k">现状</span><span>A. 世界脉搏每 2 时段触发一次额外 LLM 调用（长线成本累积）；B. <span class="code">app-ui.js:98</span> 启动时对<strong>所有世界</strong>循环重算 embedding，多世界用户初始化变慢。</span></div>
+  <div class="row"><span class="k">建议</span><span>A. 世界脉搏改为"仅当前世界活跃时"低频触发，或合并进主响应的副产物（让 AI 在常规叙事里顺带产出一条 world_event，省一次调用）；B. embedding 改为<strong>惰性重算</strong>——只在进入某世界时算该世界，不全量预跑。</span></div>
+  <div class="row"><span class="k">成本</span><span>低。</span></div>
+</div>
+
+<div class="card">
+  <span class="tag p2">P2</span>
+  <h4>⑬ 缺"导出 / 分享"成故事</h4>
+  <div class="row"><span class="k">现状</span><span>对话在 localStorage，无导出成品小说 / 分享存档的能力。</span></div>
+  <div class="row"><span class="k">同行</span><span>AI Dungeon 有"分享冒险"；NovelAI 导出小说。这是传播与留存的关键。</span></div>
+  <div class="row"><span class="k">建议</span><span>一键把 <span class="code">conversationHistory</span> 渲染成带章节/选择的纯文本或 HTML 故事，可下载/分享。</span></div>
+  <div class="row"><span class="k">成本</span><span>低。</span></div>
+</div>
+
+<h2>6. 优先级路线图</h2>
+<div class="sec">
+<p class="muted" style="margin:0 0 14px">✅ <b>已落地（13 项，均确定性测试 PASS）</b>：① 技能检定 · ④ 预言机/混沌因子 · ⑧ 常量记忆层 · ⑦ 地图战斗集成 · ⑨ 章节幕结构 · ⑭ 反向回写+战争迷雾 · ⑤ 世界模拟(势力/经济/合成/装备) · ⑪ 预设 IP 库(8世界+canon) · ⑫ 成本/性能优化(embedding 惰性重算 + 世界脉搏合并) · ⑨扩展 分支快照(多时间线) · ⑬ 导出故事(Markdown) · ⑥ 跨周目 meta 成长(传说评级+开局馈赠) · ⑩ 基调显式持久化(AI显式定调+剧情切基调)。⏭️ <b>跳过</b>：③ C1 安全彩蛋（你此前指示不动，待拍板）。下方路线图保留原分批逻辑，供后续参照。</p>
+<div class="grid">
+  <div>
+    <h3 style="color:var(--red)">P0 · 立刻做（低风险高回报）</h3>
+    <ul>
+      <li>✅ <b>① 非战斗技能检定</b>——已落地</li>
+      <li>✅ <b>④ 叙事预言机 / 混沌因子</b>——已落地</li>
+      <li>✅ <b>⑧ 常量记忆层（pinned facts）</b>——已落地</li>
+    </ul>
+  </div>
+  <div>
+    <h3 style="color:var(--amber)">P1 · 第二批</h3>
+    <ul>
+      <li><b>②⑤</b> NPC 位置结构化 + 世界空间图/势力声望（"像游戏"的骨架）</li>
+      <li>✅ <b>⑨</b> 章节/幕结构（已落地） + <b>⑪</b> 预设 IP 库与 canon 校验（已落地：8 个开箱即玩世界）</li>
+      <li><b>③</b> C1 安全一致性（需你拍板，跳过）</li>
+    </ul>
+  </div>
+  <div>
+    <h3 style="color:var(--blue)">P2 · 第三批（深度打磨）</h3>
+    <ul>
+      <li>✅ <b>⑦</b> 战斗与地图集成（已落地）</li>
+      <li><b>⑧扩展</b> 玩家可编辑世界书（NovelAI 式策展）</li>
+      <li><b>⑥</b> 跨周目 meta 成长（传说评级 + 开局机制性馈赠，<b>已落地</b>，31 PASS）</li>
+      <li><b>⑩</b> 基调显式持久化</li>
+    </ul>
+  </div>
+  <div>
+    <h3>杠杆最大的单步</h3>
+    <ul>
+      <li>做 <b>①+④</b>：一个让"判定"成立、一个让"未知"成立——这两件事合起来，才真正从"AI 写故事"变成"AI 单人跑团"（均已落地）。</li>
+      <li>做 <b>⑧</b>：用最低成本消除长线遗忘这个同类产品最大的痛点（已落地）。</li>
+      <li>下一步杠杆：<b>⑤ 势力声望</b> + <b>⑪ 预设 IP 库</b>——把引擎补成真游戏与开箱即玩。</li>
+    </ul>
+  </div>
+</div>
+</div>
+
+<div class="note">
+  <b>关于 C1 的说明：</b>越狱彩蛋（app-core.js:84）是你此前明确指示"跳过"的项，本次仅作为一致性风险标注，未擅自动它。它确实存在"自己绕过自己防注入"的矛盾，若未来要上线或开放分享，建议至少把身份锁定指令固定为 system 绝对首位。
+</div>
+
+<h2>7. 剩余优化方向清单</h2>
+<div class="sec">
+<p class="muted">截至 2026-07-08，对比矩阵中 ① ④ ⑧ ⑦ ⑨ ⑭ ⑤ ⑪ ⑫ ⑨扩展 ⑬ ⑥ ⑩ I 共 14 项已落地并通过确定性测试。以下为尚未启动或仅部分完成的优化方向，按优先级与杠杆排序。</p>
+<table>
+  <tr><th>方向</th><th>关联原编号</th><th>优先级</th><th>核心动作</th><th>成本</th><th>状态</th></tr>
+  <tr><td>势力声望 / 阵营系统</td><td>⑤</td><td>P1</td><td>把全局 tension 升级为多阵营 standing，影响可接任务、遭遇、商店定价</td><td>中</td><td class="ok">✅ 已落地（多阵营声望+立场）</td></tr>
+  <tr><td>经济 / 合成 / 装备</td><td>⑤</td><td>P1</td><td>货币真实流通（商店/赏金/贿赂）；物品可组合、可穿戴改属性（跑团）</td><td>中-高</td><td class="ok">✅ 已落地（货币/合成工坊/装备 + 商店 NPC 固定货架定价 + 阵营任务接取/交付奖励，45 PASS）</td></tr>
+  <tr><td>预设 IP 库 + canon 校验</td><td>⑪</td><td>P1</td><td>哈利波特/三国/西游等带 lore_kb+规则+角色模板；一键导入向导；canon 清单强制遵守</td><td>中</td><td class="ok">✅ 已落地（8 世界：5 公有领域IP+3原创，canon 校验）</td></tr>
+  <tr><td>NPC 位置结构化抽取 / 地图化</td><td>②</td><td>P1</td><td>AI 在 npc_states 显式返 location 字段，文本抽取仅作兜底；同步成地图 npc 实体</td><td>低</td><td class="ok">✅ 已落地（npc_states→地图 npc 实体，受战争迷雾约束）</td></tr>
+  <tr><td>玩家可编辑世界书</td><td>⑧扩展</td><td>P2</td><td>NovelAI 式策展面板，玩家增删 lore / 常量记忆</td><td>中</td><td class="gap">未做</td></tr>
+  <tr><td>分支快照 / what-if 回溯</td><td>⑨扩展</td><td>P2</td><td>关键抉择存分叉点，可回退试不同路径（localStorage 存档天然支持）</td><td>中</td><td class="ok">✅ 已落地（38 PASS）</td></tr>
+  <tr><td>跨周目 meta 成长</td><td>⑥</td><td>P2</td><td>传说等级带入新世界给初始声望/资源/特殊关系加成</td><td>低-中</td><td class="ok">✅ 已落地（传说评级 + 开局馈赠，31 PASS）</td></tr>
+  <tr><td>基调显式持久化</td><td>⑩</td><td>P2</td><td>世界生成由 AI 定调存 currentWorld.tone，事件可切基调</td><td>低</td><td class="ok">✅ 已落地（AI 显式定调存 currentWorld.tone + 事件可切基调，14 PASS）</td></tr>
+  <tr><td>导出 / 分享成故事</td><td>⑬</td><td>P2</td><td>对话→带章节/选择的纯文本或 HTML，可下载分享</td><td>低</td><td class="ok">✅ 已落地（Markdown 全文，43 PASS）</td></tr>
+  <tr><td>成本 / 性能优化</td><td>⑫</td><td>P2</td><td>embedding 惰性重算；世界脉搏合并进主响应省一次调用</td><td>低</td><td class="ok">✅ 已落地（embedding 惰性重算 + 世界脉搏合并进主响应省一次调用，22 PASS）</td></tr>
+  <tr><td>探索半径可调 + 长寻路</td><td>⑭扩展</td><td>P2</td><td>创建时设迷雾揭示半径；&gt;8 步多段寻路增强</td><td>低</td><td>部分（默认已实现）</td></tr>
+  <tr><td>API URL 拼接健壮性</td><td>I</td><td>P2</td><td>buildApiUrl/normalizeApiBaseUrl 抽纯函数并增强：去重 /chat/completions、协议补全、CORS 代理规范化</td><td>低</td><td class="ok">✅ 已落地（去重 /chat/completions、协议补全、CORS 代理规范化，25 PASS）</td></tr>
+  <tr><td>C1 安全一致性</td><td>③</td><td>P1</td><td>身份锁定固定 system 绝对首位 / 或移除越狱彩蛋</td><td>极低</td><td class="gap">跳过（待你拍板）</td></tr>
+</table>
+<div class="note">
+  <b>建议下一步（杠杆排序）：</b>
+  <ul>
+    <li><b>⑤ 世界模拟（P1，已落地）</b>：多阵营声望/货币流通/合成工坊/装备/商店 NPC 固定货架定价/阵营任务接取交付闭环 均已落地（见 docs/12 §10.5 / §10.5.1 / §10.5.2，45 PASS）。下一步可在其之上接"阵营驱动遭遇"，让世界网真正咬合。</li>
+    <li><b>⑪ 预设 IP 库（P1，已落地）</b>：已内置 8 个开箱即玩世界（5 公有领域 IP + 3 原创），带 canon 校验。下一步可做"一键导入 IP 设定"向导，把套用任意 IP 的门槛清零。</li>
+    <li><b>⑧扩展 玩家世界书（P2，已落地）</b>：玩家可手动增删改 lore_kb 片段与 pinned_facts 常量记忆，策展面板对标 NovelAI，人机共编落地（见 docs/12 §1.3）。</li>
+    <li><b>⑨扩展 分支快照（P2，已落地）</b>：章节/幕结构已落地，回溯试不同路径（多时间线）是"多结局"叙事的自然延伸，现已实现关键抉择前拍快照、随时分叉回任意时间点（见 docs/12 §10.7，snapshot_check 38 PASS）。</li>
+  </ul>
+</div>
+</div>
+
+<h2>8. 总结</h2>
+<div class="sec">
+<p>本项目已经是一个<strong>架构成熟度超出同体量开源项目</strong>的 AI 叙事引擎：记忆一致性、状态结构化、双模式、沉浸反馈闭环都做得很扎实，且在"不遗忘剧情"这一点上比开山鼻祖 AI Dungeon 还稳。</p>
+<p>它已从"高质量的连续文本生成器"进化为<strong>带判定、带未知、带空间地图的 AI 单人跑团引擎</strong>（判定/预言机/常量记忆/地图战斗/章节幕/反向回写+战争迷雾均已落地）。对比 AI Roguelite 的"真游戏模拟"、NovelAI 的"可策展世界书"，本项目的下一步跃迁不在"文笔更好"，而在三件事：</p>
+<p style="margin:10px 0 0">
+<span class="pill">判定已成立 ✅（技能检定）</span>
+<span class="pill">未知已成立 ✅（oracle+混沌因子）</span>
+<span class="pill">记忆已可控 ✅（pinned 常量层）</span>
+<span class="pill">空间已成形 ✅（地图+战斗+迷雾）</span>
+<span class="pill">世界已成形 ✅（势力/经济/合成/装备）</span>
+<span class="pill">IP 开箱即玩 ✅（预设库 8 世界+canon）</span>
+<span class="pill">让记忆共编（玩家世界书）</span>
+</p>
+<p class="muted" style="margin-top:14px">分析依据：通读 README、docs/09、docs/10、docs/11、docs/12、系统设计与状态设计文档，以及 app-ai.js / app-game.js / action-menu.js / dice.js / app-core.js / system_prompt_template.md / rulesets.json / initial_state.json / map-data.js / renderer/tile-map.js；并对 A1 向量补算调用点、预设世界、C1 彩蛋、地图战斗集成、反向回写与战争迷雾做了 grep 核实与 vm 沙箱确定性测试（reverse_writeback_fog_check / map_combat_check / oracle_check / skill_check / act_check 全 PASS）；竞品事实来自 AI Roguelite（Steam/官网）、NovelAI Lorebook 机制、AI Dungeon 记忆问题（2026 社区讨论）的检索核对。</p>
+</div>
+
+<div class="foot">超级八爪藤壶 · 竞品对比与优化方向分析 · 2026-07-07（更新：标注已落地项 + 第 7 节剩余方向清单）</div>
+
+</div>
+</body>
+</html>
